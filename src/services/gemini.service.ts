@@ -1,6 +1,7 @@
 import { GoogleGenerativeAI } from "@google/generative-ai";
 import axios from "axios";
-import { prisma } from "../lib/prisma"; // Usando o prisma do microserviço
+import { prisma } from "../lib/prisma";
+import { addDays, isAfter, isBefore, startOfDay, format } from "date-fns";
 
 export class GeminiService {
   private genAI: GoogleGenerativeAI;
@@ -12,17 +13,13 @@ export class GeminiService {
     this.genAI = new GoogleGenerativeAI(apiKey);
   }
 
-  /**
-   * 🛠️ DEFINIÇÃO DA FERRAMENTA (TOOL)
-   * Avisa ao Gemini que ele pode criar reservas
-   */
   private tools = [
     {
       functionDeclarations: [
         {
           name: "create_reservation",
           description:
-            "Cria uma nova reserva no banco de dados para um cliente.",
+            "Cria uma nova reserva validando disponibilidade e regras da casa.",
           parameters: {
             type: "object",
             properties: {
@@ -32,19 +29,19 @@ export class GeminiService {
               },
               customerPhone: {
                 type: "string",
-                description: "Telefone de contato",
+                description: "Telefone (apenas números)",
               },
               customerEmail: {
                 type: "string",
-                description: "E-mail do cliente (opcional)",
+                description: "E-mail (opcional)",
               },
               date: {
                 type: "string",
-                description: "Data da reserva no formato YYYY-MM-DD",
+                description: "Data da reserva (YYYY-MM-DD)",
               },
               spaceName: {
                 type: "string",
-                description: "Nome do setor/mesa/camarote desejado",
+                description: "Nome do setor (ex: Camarote 1)",
               },
             },
             required: ["customerName", "customerPhone", "date", "spaceName"],
@@ -60,15 +57,15 @@ export class GeminiService {
     message: string,
   ) {
     try {
+      // 1. Busca dados e SETTINGS da balada
       const { data: nightclub } = await axios.get(
         `${this.MAIN_API_URL}/nightclubs/${nightclubId}`,
       );
-
       if (!nightclub.aiAgent?.isActive) return null;
 
       const model = this.genAI.getGenerativeModel({
         model: "gemini-2.0-flash",
-        tools: this.tools as any, // 👈 Injeta as ferramentas aqui
+        tools: this.tools as any,
       });
 
       const chat = model.startChat({
@@ -81,7 +78,7 @@ export class GeminiService {
             role: "model",
             parts: [
               {
-                text: "Entendido. Sou o assistente oficial. Posso realizar reservas agora.",
+                text: "Assistente ReservasClub ativo. Validação de banco sincronizada.",
               },
             ],
           },
@@ -92,17 +89,16 @@ export class GeminiService {
       const response = result.response;
       const call = response.functionCalls()?.[0];
 
-      // 1. SE A IA DECIDIU CHAMAR A FUNÇÃO DE RESERVA
       if (call && call.name === "create_reservation") {
         const args: any = call.args;
 
-        // Executamos a reserva no banco real
-        const reservationResult = await this.executeCreateReservation(
+        // 🚀 A MÁGICA: Executa validação pesada antes de salvar
+        const reservationResult = await this.validateAndCreate(
           nightclubId,
+          nightclub,
           args,
         );
 
-        // Devolvemos o resultado para a IA para ela confirmar ao cliente
         const finalResponse = await chat.sendMessage([
           {
             functionResponse: {
@@ -115,70 +111,108 @@ export class GeminiService {
         return finalResponse.response.text();
       }
 
-      // 2. SE FOR APENAS CONVERSA NORMAL
       return response.text();
     } catch (error: any) {
-      console.error("[GeminiService] Erro:", error.message);
-      return "Desculpe, tive um problema técnico. Um atendente humano já foi avisado.";
+      console.error("[GeminiService Error]", error.message);
+      return "Estou processando sua solicitação, um momento...";
     }
   }
 
-  /**
-   * 💾 EXECUÇÃO NO BANCO DE DADOS
-   */
-  private async executeCreateReservation(nightclubId: string, args: any) {
+  private async validateAndCreate(
+    nightclubId: string,
+    nightclub: any,
+    args: any,
+  ) {
     try {
-      // 1. Tenta achar o Space pelo nome dentro daquela balada
+      const requestedDate = startOfDay(new Date(args.date));
+      const today = startOfDay(new Date());
+
+      // 1. Validação de Antecedência (Lead Time)
+      // Pegamos do settings JSON que você definiu no admin
+      const settings = nightclub.settings || {};
+      const maxDays = settings.reservationLeadTimeDays || 30; // Default 30 dias se não definido
+      const limitDate = addDays(today, maxDays);
+
+      if (isBefore(requestedDate, today))
+        return "Erro: Não aceitamos reservas para datas passadas.";
+      if (isAfter(requestedDate, limitDate))
+        return `Erro: Só aceitamos reservas com até ${maxDays} dias de antecedência.`;
+
+      // 2. Busca o Setor (Space)
       const space = await prisma.space.findFirst({
         where: {
           nightclubId,
           name: { contains: args.spaceName, mode: "insensitive" },
+          status: "ACTIVE",
         },
       });
 
-      if (!space) {
-        return `Erro: Não encontrei nenhum setor com o nome '${args.spaceName}'. Pergunte ao cliente qual setor ele deseja entre os disponíveis.`;
-      }
+      if (!space)
+        return `Erro: O setor '${args.spaceName}' não existe ou está em manutenção.`;
 
-      // 2. Cria a reserva
+      // 3. CHECK DE DISPONIBILIDADE (O Pulo do Gato 🐱)
+      const existing = await prisma.reservation.findFirst({
+        where: {
+          spaceId: space.id,
+          date: requestedDate,
+          status: { in: ["CONFIRMED", "PENDING"] }, // Se tem alguém pagando ou confirmado, trava.
+        },
+      });
+
+      if (existing)
+        return `Erro: O ${space.name} já está reservado para esta data (${args.date}). Tente outro setor ou data.`;
+
+      // 4. CRM: Busca ou Cria o Cliente (Para não duplicar)
+      const customer = await prisma.customer.upsert({
+        where: {
+          email:
+            args.customerEmail || `user-${args.customerPhone}@reservas.com`,
+        },
+        update: { phone: args.customerPhone, name: args.customerName },
+        create: {
+          name: args.customerName,
+          phone: args.customerPhone,
+          email:
+            args.customerEmail || `user-${args.customerPhone}@reservas.com`,
+        },
+      });
+
+      // 5. Cria a Reserva Final
       const reservation = await prisma.reservation.create({
         data: {
           nightclubId,
           spaceId: space.id,
+          customerId: customer.id,
           customerName: args.customerName,
           customerPhone: args.customerPhone,
-          customerEmail: args.customerEmail || null,
-          date: new Date(args.date),
+          customerEmail: customer.email,
+          date: requestedDate,
+          amount: space.price,
           status: "PENDING",
         },
       });
 
-      return `Sucesso! Reserva criada com ID ${reservation.id}. Informe ao cliente que a reserva para o setor ${space.name} no dia ${args.date} está pré-confirmada e aguardando pagamento.`;
+      return `Sucesso! Reserva #${reservation.id.substring(0, 5)} criada para ${args.customerName}. Setor: ${space.name} | Data: ${args.date}. O link de pagamento será enviado em breve.`;
     } catch (error: any) {
-      console.error("[DB Error]", error.message);
-      return "Erro interno ao salvar no banco. Peça para o cliente aguardar um momento.";
+      return `Erro sistêmico: ${error.message}`;
     }
   }
 
   private buildSystemContext(nightclub: any) {
-    const spacesInfo = nightclub.spaces
-      .map((s: any) => `- ${s.name}: R$ ${s.price} (Capacidade: ${s.capacity})`)
+    const spaces = nightclub.spaces
+      .map((s: any) => `- ${s.name}: R$ ${s.price}`)
       .join("\n");
-
     return `
-      VOCÊ É O ASSISTENTE DA BALADA ${nightclub.name.toUpperCase()}.
-      DATA ATUAL: ${new Date().toISOString().split("T")[0]}.
-
-      INFORMAÇÕES DE SETORES:
-      ${spacesInfo}
+      VOCÊ É O ASSISTENTE DA ${nightclub.name.toUpperCase()}.
+      HOJE É: ${format(new Date(), "yyyy-MM-dd")}.
+      
+      SETORES DISPONÍVEIS:
+      ${spaces}
 
       REGRAS:
-      - Para reservar, você PRECISA de: Nome, Telefone, Data e Setor.
-      - Quando tiver esses 4 dados, use a ferramenta 'create_reservation'.
-      - Se o cliente perguntar algo que não sabe, chame um humano.
-      
-      TREINAMENTO:
-      ${nightclub.aiAgent.systemPrompt || "Seja eficiente."}
+      1. Use a ferramenta 'create_reservation' apenas quando tiver Nome, Telefone, Data e Setor.
+      2. Nunca prometa disponibilidade sem chamar a ferramenta.
+      3. Seja educado e use a personalidade definida: ${nightclub.aiAgent.systemPrompt}
     `;
   }
 }
