@@ -1,20 +1,20 @@
 import express, { Request, Response } from "express";
 import cors from "cors";
 import dotenv from "dotenv";
-import webhookRoutes from "./routes/webhook.routes"; // <-- Importação das rotas que acabamos de criar
+import webhookRoutes from "./routes/webhook.routes";
+import instanceRoutes from "./routes/instance.routes"; // <-- Nova importação
 
 // Carrega as variáveis de ambiente
 dotenv.config();
 
 const app = express();
-// Usamos a porta 3001 como padrão para o serviço de IA
 const PORT = process.env.PORT || 3001;
 
-// Middlewares essenciais
+// Middlewares
 app.use(cors());
 app.use(express.json());
 
-// Rota de Health Check para garantir que a API está no ar
+// Rota de Health Check
 app.get("/health", (req: Request, res: Response) => {
   res.status(200).json({
     status: "online",
@@ -22,10 +22,11 @@ app.get("/health", (req: Request, res: Response) => {
   });
 });
 
-// Registrar a rota de Webhooks (A Evolution API vai bater em http://localhost:3001/webhooks/evolution)
+// Registrar Rotas
 app.use("/webhooks", webhookRoutes);
+app.use("/instances", instanceRoutes); // <-- Rota para criar instâncias e QR Code
 
-// Inicialização do servidor
+// Inicialização
 app.listen(PORT, () => {
   console.log(`[Service-IA] Servidor rodando na porta ${PORT}`);
 });
