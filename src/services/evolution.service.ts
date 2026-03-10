@@ -17,6 +17,15 @@ const evolutionClient = axios.create({
 
 export const criarInstancia = async (instanceName: string) => {
   try {
+    // 🔍 LOGS DE DEBUG ESCRACHADOS (As aspas ajudam a ver espaços invisíveis)
+    console.log(
+      `[DEBUG Evolution] URL recebida do .env: "${EVOLUTION_API_URL}"`,
+    );
+    console.log(
+      `[DEBUG Evolution] KEY recebida do .env: "${EVOLUTION_API_KEY}"`,
+    );
+    console.log(`[DEBUG Evolution] Tentando criar instância: ${instanceName}`);
+
     const response = await evolutionClient.post("/instance/create", {
       instanceName: instanceName,
       qrcode: true,
