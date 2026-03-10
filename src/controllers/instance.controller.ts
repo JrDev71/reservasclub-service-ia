@@ -15,7 +15,7 @@ export const createNightclubInstance = async (req: Request, res: Response) => {
         .json({ error: "O ID da balada (nightclubId) é obrigatório no body." });
     }
 
-    // Verifica se a balada realmente existe no seu banco de dados atual
+    // 1. Busca a balada para pegar o slug (seu identificador humano)
     const nightclub = await prisma.nightclub.findUnique({
       where: { id: nightclubId },
     });
@@ -24,28 +24,28 @@ export const createNightclubInstance = async (req: Request, res: Response) => {
       return res.status(404).json({ error: "Balada não encontrada." });
     }
 
-    // Cria um nome único para a instância baseado no slug para não dar conflito na Evolution
+    // 2. Define o nome da instância usando o seu padrão de slug
     const instanceName = `balada_${nightclub.slug}`;
 
     console.log(
-      `[Instance] Solicitando criação na Evolution API para: ${instanceName}`,
+      `[Instance] Iniciando criação na Evolution API: ${instanceName}`,
     );
 
-    // 1. Chama a Evolution API para criar a instância e gerar o QR Code
+    // 3. Solicita a criação na Evolution API
     const evolutionResponse = await criarInstancia(instanceName);
 
-    // A Evolution devolve o base64 dentro do objeto qrcode quando passamos qrcode: true
+    // Extrai o QR Code em Base64 (conforme a estrutura da Evolution)
     const qrCodeBase64 = evolutionResponse?.qrcode?.base64 || "";
 
-    // 2. Configura o Webhook na Evolution API
-    // Dica de ouro: Como a Evolution está rodando dentro do Docker e nosso Node.js está rodando
-    // direto na sua máquina (host), o Docker usa 'host.docker.internal' para enxergar o seu localhost.
+    // 4. Configura o Webhook
+    // Se o ngrok estiver rodando, use a URL dele no .env (WEBHOOK_URL)
     const webhookUrl =
       process.env.WEBHOOK_URL ||
-      "http://host.docker.internal:3001/webhooks/evolution";
+      "http://host.docker.internal:3001/evolution/webhook";
+
     await configurarWebhook(instanceName, webhookUrl);
 
-    // 3. Salva (ou atualiza se já existir) a instância no banco de dados
+    // 5. Sincroniza com o banco de dados (Upsert para evitar duplicidade)
     const whatsappInstance = await prisma.whatsappInstance.upsert({
       where: { instanceName },
       update: {
@@ -61,10 +61,9 @@ export const createNightclubInstance = async (req: Request, res: Response) => {
       },
     });
 
-    // Retorna os dados limpos para o seu frontend renderizar a imagem
     return res.status(200).json({
       success: true,
-      message: "Instância criada com sucesso. Leia o QR Code para conectar.",
+      message: "Instância pronta. Aguardando leitura do QR Code.",
       instance: {
         id: whatsappInstance.id,
         instanceName: whatsappInstance.instanceName,
