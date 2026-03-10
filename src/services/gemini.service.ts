@@ -7,6 +7,7 @@ export class GeminiService {
   private genAI: GoogleGenerativeAI;
   private readonly MAIN_API_URL =
     process.env.MAIN_API_URL || "http://localhost:3000";
+  private readonly MAIN_API_TOKEN = process.env.MAIN_API_TOKEN; // 🔑 O crachá da IA
 
   constructor() {
     const apiKey = process.env.GEMINI_API_KEY;
@@ -62,15 +63,19 @@ export class GeminiService {
     message: string,
   ) {
     try {
-      // 1. Busca dados da balada na API Principal
+      // 1. Busca dados da balada na rota VIP de serviço
       console.log(
-        `[GeminiService] Consultando Main API em: ${this.MAIN_API_URL}/nightclubs/${nightclubId}`,
+        `[GeminiService] Consultando rota VIP em: ${this.MAIN_API_URL}/nightclubs/service-ia/${nightclubId}`,
       );
 
       const responseMain = await axios
-        .get(`${this.MAIN_API_URL}/nightclubs/${nightclubId}`)
+        .get(`${this.MAIN_API_URL}/nightclubs/service-ia/${nightclubId}`, {
+          headers: {
+            // Esse header precisa ser igual ao INTERNAL_SERVICE_KEY da sua Main API
+            "x-internal-key": this.MAIN_API_TOKEN,
+          },
+        })
         .catch((err) => {
-          // Se der 401 aqui, você precisa verificar se a Main API exige Token!
           throw new Error(
             `Falha na Main API (${err.response?.status || "OFFLINE"}): ${err.message}`,
           );
@@ -136,7 +141,6 @@ export class GeminiService {
 
       return chatResponse.text();
     } catch (error: any) {
-      // Diferenciamos o erro para você saber onde agir
       if (error.message.includes("Main API")) {
         console.error(
           "❌ [GeminiService - B.O na API Principal]:",
@@ -149,7 +153,7 @@ export class GeminiService {
       } else {
         console.error("❌ [GeminiService Error]:", error.message);
       }
-      return null; // Retorna null para o controller não tentar mandar lixo pro WhatsApp
+      return null;
     }
   }
 
