@@ -1,0 +1,284 @@
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+// =========================================================
+// 1. USUÁRIOS (QUEM LOGA NO SISTEMA: ADMIN/STAFF/MANAGER)
+// =========================================================
+model User {
+  id           String    @id @default(uuid())
+  email        String    @unique
+  password     String    // Senha Hasheada (Bcrypt)
+  name         String
+  
+  // Controle de Acesso
+  role         UserRole @default(STAFF)
+  
+  // Vínculo: A qual balada esse usuário pertence?
+  nightclubId  String?
+  nightclub    Nightclub? @relation(fields: [nightclubId], references: [id])
+
+  // 🔔 NOVA RELAÇÃO: Dispositivos para notificações push
+  pushSubscriptions PushSubscription[]
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@map("users")
+}
+
+// =========================================================
+// NOVO: ARMAZENAMENTO DE TOKENS DE NOTIFICAÇÃO
+// =========================================================
+model PushSubscription {
+  id        String   @id @default(uuid())
+  userId    String
+  user      User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  
+  // Dados técnicos que o navegador gera (WebPush)
+  endpoint  String   @unique
+  auth      String
+  p256dh    String
+  
+  // Para sabermos se é o celular do dono, gerente, etc.
+  deviceName String?  @default("Dispositivo Desconhecido")
+
+  createdAt DateTime @default(now())
+
+  @@map("push_subscriptions")
+}
+
+// =========================================================
+// 2. A BALADA (O CLIENTE QUE TE PAGA)
+// =========================================================
+model Nightclub {
+  id               String    @id @default(uuid())
+  name             String
+  slug             String    @unique
+  logoUrl          String?  
+  mapUrl           String?  
+  themeColor       String?   @default("#697cafff")
+  whatsapp         String
+  vipTokens        VipToken[]
+  
+  appFeePercent    Decimal   @default(5.0) 
+  mpAccessToken    String?  
+
+  repassPixKey      String?
+  repassPixKeyType  String? 
+  
+  settings         Json?     
+
+  createdAt        DateTime  @default(now())
+  updatedAt        DateTime  @updatedAt
+
+  users            User[]        
+  spaces           Space[]
+  reservations     Reservation[]
+  
+  // 🔔 NOVA RELAÇÃO: SaaS de IA e WhatsApp
+  whatsappInstances WhatsappInstance[]
+  aiAgent           AiAgent?
+
+  @@map("nightclubs")
+}
+
+// =========================================================
+// 3. O INVENTÁRIO (MESAS/CAMAROTES)
+// =========================================================
+model Space {
+  id              String      @id @default(uuid())
+  nightclubId     String
+  name            String
+  type            SpaceType
+  capacity        Int
+  status          SpaceStatus @default(ACTIVE)
+  
+  price           Decimal?    @default(0.0)
+  minConsumption  Decimal?    @default(0.0)
+
+  description     String?
+  mapPosition     Json?        
+
+  nightclub    Nightclub   @relation(fields: [nightclubId], references: [id])
+  reservations Reservation[]
+
+  @@map("spaces")
+}
+
+// =========================================================
+// 4. O CLIENTE ( CRM E BLACKLIST)
+// =========================================================
+model Customer {
+  id           String    @id @default(uuid())
+  name         String
+  email        String    @unique
+  phone        String
+  cpf          String?   @unique 
+  birthdayDate DateTime?
+  
+  isBlocked    Boolean   @default(false)
+  
+  reservations Reservation[]
+  
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@map("customers")
+}
+
+// =========================================================
+// 5. AS RESERVAS
+// =========================================================
+model Reservation {
+  id               String            @id @default(uuid())
+  nightclubId      String
+  spaceId          String
+  date             DateTime          @db.Date
+  
+  customerName     String
+  customerPhone    String
+  customerEmail    String?            
+  
+  customerId       String?            
+  customer         Customer?         @relation(fields: [customerId], references: [id])
+  
+  isBirthday       Boolean           @default(false) 
+  birthdayDate     DateTime?         
+  notes            String?            
+
+  status           ReservationStatus @default(PENDING)
+  checkInTime      DateTime?
+  checkInAt        DateTime? 
+  validationToken  String? @unique
+
+  amount           Decimal?   @default(0.0)
+  paymentId        String?    @unique 
+  paymentCreatedAt DateTime?
+  paymentDeadline  DateTime?
+  
+  createdAt        DateTime          @default(now())
+
+  nightclub Nightclub @relation(fields: [nightclubId], references: [id])
+  space     Space     @relation(fields: [spaceId], references: [id])
+
+  @@map("reservations")
+}
+
+// =========================================================
+// 6. LISTA VIP
+// =========================================================
+model VipToken {
+  id           String      @id @default(uuid())
+  nightclubId  String
+  code         String      @unique 
+  
+  maxGuests    Int         @default(50) 
+  currentCount Int         @default(0)
+  
+  expiresAt    DateTime    
+  isActive     Boolean     @default(true)
+  
+  guests       VipGuest[]
+  nightclub    Nightclub   @relation(fields: [nightclubId], references: [id])
+  createdAt    DateTime    @default(now())
+
+  @@map("vip_tokens")
+}
+
+// =========================================================
+// 7. CONVIDADOS DA LISTA VIP
+// =========================================================
+model VipGuest {
+  id           String      @id @default(uuid())
+  vipTokenId   String
+  
+  name         String
+  phone        String?
+
+  validationToken String?        @unique
+  
+  status       VipGuestStatus @default(PENDING)
+  checkInAt    DateTime?
+  
+  vipToken     VipToken    @relation(fields: [vipTokenId], references: [id])
+  createdAt    DateTime    @default(now())
+
+  @@map("vip_guests")
+}
+
+// =========================================================
+// 8. INSTÂNCIAS DE WHATSAPP (EVOLUTION API) - NOVO
+// =========================================================
+model WhatsappInstance {
+  id              String    @id @default(uuid())
+  nightclubId     String
+  instanceName    String    @unique // Ex: upbar_123
+  status          String    @default("DISCONNECTED") // CONNECTED, DISCONNECTED, QRCODE
+  qrCode          String?   @db.Text
+  createdAt       DateTime  @default(now())
+  updatedAt       DateTime  @updatedAt
+
+  nightclub       Nightclub @relation(fields: [nightclubId], references: [id], onDelete: Cascade)
+
+  @@map("whatsapp_instances")
+}
+
+// =========================================================
+// 9. CONFIGURAÇÃO DA IA (GEMINI) - NOVO
+// =========================================================
+model AiAgent {
+  id              String    @id @default(uuid())
+  nightclubId     String    @unique
+  systemPrompt    String    @db.Text
+  isActive        Boolean   @default(true)
+  createdAt       DateTime  @default(now())
+  updatedAt       DateTime  @updatedAt
+
+  nightclub       Nightclub @relation(fields: [nightclubId], references: [id], onDelete: Cascade)
+
+  @@map("ai_agents")
+}
+
+// =========================================================
+// ENUMS
+// =========================================================
+
+enum UserRole {
+  SUPERADMIN 
+  OWNER      
+  MANAGER    // 👈 NOVO: Perfil de Gerente
+  STAFF      
+}
+
+enum SpaceType {
+  CAMAROTE
+  BISTRO
+  MESA
+}
+
+enum SpaceStatus {
+  ACTIVE
+  MAINTENANCE
+  DISABLED
+}
+
+enum ReservationStatus {
+  PENDING    
+  CONFIRMED  
+  CANCELED   
+  COMPLETED  
+  CHECKED_IN
+  NO_SHOW     
+}
+
+enum VipGuestStatus {
+  PENDING      
+  CHECKED_IN   
+  CANCELLED    
+}
