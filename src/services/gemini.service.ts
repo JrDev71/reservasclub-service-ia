@@ -1,127 +1,184 @@
 import { GoogleGenerativeAI } from "@google/generative-ai";
 import axios from "axios";
+import { prisma } from "../lib/prisma"; // Usando o prisma do microserviço
 
 export class GeminiService {
   private genAI: GoogleGenerativeAI;
-  private model: any;
   private readonly MAIN_API_URL =
     process.env.MAIN_API_URL || "http://localhost:3000";
 
   constructor() {
-    // Configura a chave do Gemini do .env do microserviço
     const apiKey = process.env.GEMINI_API_KEY || "";
     this.genAI = new GoogleGenerativeAI(apiKey);
-
-    // Usamos o modelo Flash para velocidade e baixo custo
-    this.model = this.genAI.getGenerativeModel({
-      model: "gemini-2.0-flash",
-      generationConfig: {
-        maxOutputTokens: 500,
-        temperature: 0.7,
-      },
-    });
   }
 
   /**
-   * 🧠 O CÉREBRO: Constrói o prompt e gera a resposta
+   * 🛠️ DEFINIÇÃO DA FERRAMENTA (TOOL)
+   * Avisa ao Gemini que ele pode criar reservas
    */
+  private tools = [
+    {
+      functionDeclarations: [
+        {
+          name: "create_reservation",
+          description:
+            "Cria uma nova reserva no banco de dados para um cliente.",
+          parameters: {
+            type: "object",
+            properties: {
+              customerName: {
+                type: "string",
+                description: "Nome completo do cliente",
+              },
+              customerPhone: {
+                type: "string",
+                description: "Telefone de contato",
+              },
+              customerEmail: {
+                type: "string",
+                description: "E-mail do cliente (opcional)",
+              },
+              date: {
+                type: "string",
+                description: "Data da reserva no formato YYYY-MM-DD",
+              },
+              spaceName: {
+                type: "string",
+                description: "Nome do setor/mesa/camarote desejado",
+              },
+            },
+            required: ["customerName", "customerPhone", "date", "spaceName"],
+          },
+        },
+      ],
+    },
+  ];
+
   async generateResponse(
     nightclubId: string,
     customerPhone: string,
     message: string,
   ) {
     try {
-      // 1. Busca os dados atualizados da balada na API Principal
-      // (Preços, Mesas, Regras e o Treinamento do Dono)
       const { data: nightclub } = await axios.get(
         `${this.MAIN_API_URL}/nightclubs/${nightclubId}`,
       );
 
-      if (!nightclub.aiAgent?.isActive) {
-        console.log(
-          `[GeminiService] IA desativada para a balada: ${nightclub.name}`,
-        );
-        return null;
-      }
+      if (!nightclub.aiAgent?.isActive) return null;
 
-      // 2. Monta a "Verdade Absoluta" do Sistema (Contexto)
-      const systemContext = this.buildSystemContext(nightclub);
+      const model = this.genAI.getGenerativeModel({
+        model: "gemini-2.0-flash",
+        tools: this.tools as any, // 👈 Injeta as ferramentas aqui
+      });
 
-      // 3. Inicia o Chat com as instruções
-      const chat = this.model.startChat({
+      const chat = model.startChat({
         history: [
           {
             role: "user",
-            parts: [{ text: systemContext }],
+            parts: [{ text: this.buildSystemContext(nightclub) }],
           },
           {
             role: "model",
             parts: [
               {
-                text: `Entendido. Sou o assistente oficial da ${nightclub.name}. Como posso ajudar?`,
+                text: "Entendido. Sou o assistente oficial. Posso realizar reservas agora.",
               },
             ],
           },
         ],
       });
 
-      // 4. Envia a mensagem do cliente
       const result = await chat.sendMessage(message);
-      const response = result.response.text();
+      const response = result.response;
+      const call = response.functionCalls()?.[0];
 
-      // 5. Verificação de Segurança: A IA tentou inventar algo?
-      return this.sanitizeResponse(response);
+      // 1. SE A IA DECIDIU CHAMAR A FUNÇÃO DE RESERVA
+      if (call && call.name === "create_reservation") {
+        const args: any = call.args;
+
+        // Executamos a reserva no banco real
+        const reservationResult = await this.executeCreateReservation(
+          nightclubId,
+          args,
+        );
+
+        // Devolvemos o resultado para a IA para ela confirmar ao cliente
+        const finalResponse = await chat.sendMessage([
+          {
+            functionResponse: {
+              name: "create_reservation",
+              response: { content: reservationResult },
+            },
+          },
+        ]);
+
+        return finalResponse.response.text();
+      }
+
+      // 2. SE FOR APENAS CONVERSA NORMAL
+      return response.text();
     } catch (error: any) {
-      console.error("[GeminiService] Erro Crítico:", error.message);
-      // Se der erro, não respondemos nada para evitar o "tente novamente" público
-      // O controlador deve tratar o aviso ao dono
-      throw error;
+      console.error("[GeminiService] Erro:", error.message);
+      return "Desculpe, tive um problema técnico. Um atendente humano já foi avisado.";
     }
   }
 
   /**
-   * 🛠️ CONSTRUTOR DE CONTEXTO: Onde a IA aprende sobre a casa
+   * 💾 EXECUÇÃO NO BANCO DE DADOS
    */
+  private async executeCreateReservation(nightclubId: string, args: any) {
+    try {
+      // 1. Tenta achar o Space pelo nome dentro daquela balada
+      const space = await prisma.space.findFirst({
+        where: {
+          nightclubId,
+          name: { contains: args.spaceName, mode: "insensitive" },
+        },
+      });
+
+      if (!space) {
+        return `Erro: Não encontrei nenhum setor com o nome '${args.spaceName}'. Pergunte ao cliente qual setor ele deseja entre os disponíveis.`;
+      }
+
+      // 2. Cria a reserva
+      const reservation = await prisma.reservation.create({
+        data: {
+          nightclubId,
+          spaceId: space.id,
+          customerName: args.customerName,
+          customerPhone: args.customerPhone,
+          customerEmail: args.customerEmail || null,
+          date: new Date(args.date),
+          status: "PENDING",
+        },
+      });
+
+      return `Sucesso! Reserva criada com ID ${reservation.id}. Informe ao cliente que a reserva para o setor ${space.name} no dia ${args.date} está pré-confirmada e aguardando pagamento.`;
+    } catch (error: any) {
+      console.error("[DB Error]", error.message);
+      return "Erro interno ao salvar no banco. Peça para o cliente aguardar um momento.";
+    }
+  }
+
   private buildSystemContext(nightclub: any) {
     const spacesInfo = nightclub.spaces
-      .map(
-        (s: any) =>
-          `- ${s.name}: Capacidade ${s.capacity} pessoas, Valor R$ ${s.price}`,
-      )
+      .map((s: any) => `- ${s.name}: R$ ${s.price} (Capacidade: ${s.capacity})`)
       .join("\n");
 
     return `
-      VOCÊ É O ASSISTENTE VIRTUAL DA BALADA: ${nightclub.name.toUpperCase()}.
-      
-      --- REGRAS DE OURO (NÃO NEGOCIÁVEIS) ---
-      1. Use apenas as informações abaixo para responder.
-      2. Se o cliente quiser reservar, peça NOME e TELEFONE.
-      3. Se você não souber uma resposta, diga: "Vou encaminhar sua dúvida para um atendente humano agora mesmo."
-      4. JAMAIS invente preços ou horários que não estejam aqui.
-      5. Seja educado, direto e mantenha o tom de voz definido pelo dono.
+      VOCÊ É O ASSISTENTE DA BALADA ${nightclub.name.toUpperCase()}.
+      DATA ATUAL: ${new Date().toISOString().split("T")[0]}.
 
-      --- INFORMAÇÕES DA CASA ---
-      WhatsApp Oficial: ${nightclub.whatsapp}
-      Setores Disponíveis:
+      INFORMAÇÕES DE SETORES:
       ${spacesInfo}
 
-      --- TREINAMENTO PERSONALIZADO DO DONO ---
-      ${nightclub.aiAgent.systemPrompt || "Seja um atendente profissional e eficiente."}
-
-      --- AGORA RESPONDA O CLIENTE ---
+      REGRAS:
+      - Para reservar, você PRECISA de: Nome, Telefone, Data e Setor.
+      - Quando tiver esses 4 dados, use a ferramenta 'create_reservation'.
+      - Se o cliente perguntar algo que não sabe, chame um humano.
+      
+      TREINAMENTO:
+      ${nightclub.aiAgent.systemPrompt || "Seja eficiente."}
     `;
-  }
-
-  /**
-   * 🛡️ SANITIZAÇÃO: Filtra alucinações comuns
-   */
-  private sanitizeResponse(text: string) {
-    if (
-      text.includes("não tenho certeza") ||
-      text.includes("desculpe, não sei")
-    ) {
-      return text + "\n\n(Aguarde, um atendente humano foi notificado).";
-    }
-    return text;
   }
 }
