@@ -5,55 +5,56 @@ import axios from "axios";
 
 const geminiService = new GeminiService();
 
+// Cache simples para evitar processar a mesma mensagem duas vezes (deduplicação)
+const processedMessages = new Set<string>();
+
 export const handleEvolutionWebhook = async (req: Request, res: Response) => {
-  console.log("\n=============================================");
-  console.log("🔥 [WEBHOOK] BATEU NA PORTA DO RENDER!");
-  console.log("=============================================\n");
+  const body = req.body;
+  const eventName = body.event || (body.events && body.events[0]);
+
+  // 1. Filtragem rápida: Só mensagens novas
+  if (String(eventName).toLowerCase() !== "messages.upsert") {
+    return res.status(200).send("OK");
+  }
+
+  const messageData = body.data;
+  const messageId = messageData.key.id;
+
+  // 2. Deduplicação: Se já processamos esse ID nos últimos 2 minutos, ignora
+  if (processedMessages.has(messageId)) {
+    return res.status(200).send("Duplicate");
+  }
+
+  // 3. Segurança: Ignora mensagens próprias
+  if (messageData.key.fromMe || messageData.message?.protocolMessage) {
+    return res.status(200).send("OK");
+  }
+
+  // Registra o ID e programa para remover em 2 minutos para não vazar memória
+  processedMessages.add(messageId);
+  setTimeout(() => processedMessages.delete(messageId), 120000);
+
+  // Responder 200 OK IMEDIATAMENTE para a Evolution não tentar reenviar por timeout
+  res.status(200).send("Processing");
 
   try {
-    const body = req.body;
-
-    // 1. Filtragem de Eventos
-    const eventName = body.event || (body.events && body.events[0]);
-    if (String(eventName).toLowerCase() !== "messages.upsert") {
-      return res.status(200).send("Evento ignorado");
-    }
-
     const instanceName = body.instance;
-    const messageData = body.data;
-
-    // 2. Segurança
-    if (messageData.key.fromMe || messageData.message?.protocolMessage) {
-      return res.status(200).send("Mensagem própria ignorada");
-    }
-
-    // 3. Extração dos dados
     const customerJid = messageData.key.remoteJid;
     const textMessage =
       messageData.message?.conversation ||
       messageData.message?.extendedTextMessage?.text;
 
-    if (!textMessage || !customerJid) {
-      return res.status(200).send("Dados incompletos");
-    }
+    if (!textMessage || !customerJid) return;
 
-    // 4. Busca Instância
     const whatsappInstance = await prisma.whatsappInstance.findUnique({
       where: { instanceName },
-      include: {
-        nightclub: {
-          include: { aiAgent: true },
-        },
-      },
+      include: { nightclub: { include: { aiAgent: true } } },
     });
 
-    if (!whatsappInstance || !whatsappInstance.nightclub?.aiAgent?.isActive) {
-      console.log("⚠️ [Webhook] IA Inativa ou Instância não encontrada.");
-      return res.status(200).send("IA Inativa");
-    }
+    if (!whatsappInstance || !whatsappInstance.nightclub?.aiAgent?.isActive)
+      return;
 
-    // 5. PROCESSAMENTO: Chama o "Cérebro"
-    console.log(`[Webhook] IA processando para: ${instanceName}`);
+    console.log(`[Webhook] IA processando: ${instanceName} | ID: ${messageId}`);
 
     const aiResponse = await geminiService.generateResponse(
       whatsappInstance.nightclubId,
@@ -61,55 +62,46 @@ export const handleEvolutionWebhook = async (req: Request, res: Response) => {
       textMessage,
     );
 
-    if (!aiResponse) {
-      console.log("⚠️ [Webhook] Gemini não gerou resposta (Cota ou Erro).");
-      return res.status(200).send("Sem resposta da IA");
+    if (aiResponse) {
+      // Formata a resposta do Gemini para o padrão do WhatsApp
+      const formattedResponse = formatForWhatsApp(aiResponse);
+      await sendToWhatsApp(instanceName, customerJid, formattedResponse);
     }
-
-    console.log(
-      `[Webhook] Resposta gerada: "${aiResponse.substring(0, 30)}..."`,
-    );
-
-    // 6. ENVIO: Formato corrigido para Evolution v2
-    await sendToWhatsApp(instanceName, customerJid, aiResponse);
-
-    return res.status(200).json({ success: true });
   } catch (error: any) {
     console.error("❌ [Webhook Error]:", error.message);
-    return res.status(200).send("Erro processado");
   }
 };
 
 /**
- * 📲 Envio corrigido para Evolution API v2.x
+ * ✨ Converte formatação Markdown (Gemini) para WhatsApp
  */
+function formatForWhatsApp(text: string): string {
+  return text
+    .replace(/\*\*(.*?)\*\*/g, "*$1*") // **negrito** -> *negrito*
+    .replace(/__(.*?)__/g, "_$1_") // __itálico__ -> _itálico_
+    .replace(/### (.*?)(\n|$)/g, "*$1*\n") // ### Título -> *Título*
+    .replace(/## (.*?)(\n|$)/g, "*$1*\n");
+}
+
 async function sendToWhatsApp(instanceName: string, jid: string, text: string) {
-  const baseUrl = process.env.EVOLUTION_API_URL?.replace(/\/$/, ""); // Remove barra no final se houver
+  const baseUrl = process.env.EVOLUTION_API_URL?.replace(/\/$/, "");
   const apiKey = process.env.EVOLUTION_API_KEY;
 
   try {
-    console.log(`[WhatsApp] Despachando para Evolution: ${instanceName}`);
-
     await axios.post(
       `${baseUrl}/message/sendText/${instanceName}`,
       {
         number: jid,
-        text: text, // No v2 o texto é direto aqui
-        delay: 1200,
+        text: text,
+        delay: 1000,
         linkPreview: false,
       },
-      {
-        headers: {
-          "Content-Type": "application/json",
-          apikey: apiKey,
-        },
-      },
+      { headers: { apikey: apiKey } },
     );
-
-    console.log(`✅ [WhatsApp] Mensagem entregue ao JID: ${jid}`);
+    console.log(`✅ [WhatsApp] Resposta enviada para ${jid}`);
   } catch (error: any) {
     console.error(
-      "❌ [WhatsApp Send Error]:",
+      "❌ [WhatsApp Error]:",
       error.response?.data || error.message,
     );
   }
