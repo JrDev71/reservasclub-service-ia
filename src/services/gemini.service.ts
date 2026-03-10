@@ -11,6 +11,11 @@ export class GeminiService {
 
   constructor() {
     const apiKey = process.env.GEMINI_API_KEY;
+    if (!apiKey) {
+      console.error(
+        "❌ [GeminiService]: Variável GEMINI_API_KEY não encontrada no Render!",
+      );
+    }
     this.genAI = new GoogleGenerativeAI(apiKey || "");
   }
 
@@ -24,13 +29,25 @@ export class GeminiService {
           parameters: {
             type: "object",
             properties: {
-              customerName: { type: "string", description: "Nome completo" },
-              customerPhone: { type: "string", description: "Telefone" },
-              customerEmail: { type: "string", description: "E-mail" },
-              date: { type: "string", description: "Data (YYYY-MM-DD)" },
+              customerName: {
+                type: "string",
+                description: "Nome completo do cliente",
+              },
+              customerPhone: {
+                type: "string",
+                description: "Telefone (apenas números)",
+              },
+              customerEmail: {
+                type: "string",
+                description: "E-mail (opcional)",
+              },
+              date: {
+                type: "string",
+                description: "Data da reserva (YYYY-MM-DD)",
+              },
               spaceName: {
                 type: "string",
-                description: "Setor (ex: Camarote 1)",
+                description: "Nome do setor (ex: Camarote 1)",
               },
             },
             required: ["customerName", "customerPhone", "date", "spaceName"],
@@ -46,28 +63,35 @@ export class GeminiService {
     message: string,
   ) {
     try {
-      // 🚀 AQUI ESTÁ A MUDANÇA: Rota /service-ia/
       console.log(
-        `[GeminiService] Consultando ROTA VIP: ${this.MAIN_API_URL}/nightclubs/service-ia/${nightclubId}`,
+        `[GeminiService] Consultando rota VIP em: ${this.MAIN_API_URL}/nightclubs/service-ia/${nightclubId}`,
       );
 
       const responseMain = await axios
         .get(`${this.MAIN_API_URL}/nightclubs/service-ia/${nightclubId}`, {
-          headers: { "x-internal-key": this.MAIN_API_TOKEN },
+          headers: {
+            "x-internal-key": this.MAIN_API_TOKEN,
+          },
         })
         .catch((err) => {
           throw new Error(
-            `Falha na Main API (${err.response?.status}): ${err.message}`,
+            `Falha na Main API (${err.response?.status || "OFFLINE"}): ${err.message}`,
           );
         });
 
       const nightclub = responseMain.data;
-      if (!nightclub || !nightclub.aiAgent?.isActive) return null;
 
+      if (!nightclub || !nightclub.aiAgent?.isActive) {
+        console.warn(`[GeminiService] Balada ${nightclubId} sem agente ativo.`);
+        return null;
+      }
+
+      // 🛠️ MUDANÇA AQUI: gemini-1.5-flash para ter mais cota grátis
       const model = this.genAI.getGenerativeModel({
-        model: "gemini-2.0-flash",
+        model: "gemini-1.5-flash",
         tools: this.tools as any,
       });
+
       const chat = model.startChat({
         history: [
           {
@@ -76,7 +100,11 @@ export class GeminiService {
           },
           {
             role: "model",
-            parts: [{ text: "Assistente ReservasClub ativo." }],
+            parts: [
+              {
+                text: "Assistente ReservasClub ativo. Validação de banco sincronizada.",
+              },
+            ],
           },
         ],
       });
@@ -87,11 +115,17 @@ export class GeminiService {
 
       if (call && call.name === "create_reservation") {
         const args: any = call.args;
+        console.log(
+          `[GeminiService] IA disparando ferramenta de reserva:`,
+          args,
+        );
+
         const reservationResult = await this.validateAndCreate(
           nightclubId,
           nightclub,
           args,
         );
+
         const finalResponse = await chat.sendMessage([
           {
             functionResponse: {
@@ -100,17 +134,28 @@ export class GeminiService {
             },
           },
         ]);
+
         return finalResponse.response.text();
       }
 
       return chatResponse.text();
     } catch (error: any) {
-      console.error("❌ [GeminiService Error]:", error.message);
+      if (error.message.includes("Main API")) {
+        console.error(
+          "❌ [GeminiService - B.O na API Principal]:",
+          error.message,
+        );
+      } else if (error.message.includes("429")) {
+        console.error(
+          "❌ [GeminiService - Limite atingido]: Mesmo no 1.5 Flash a cota estourou.",
+        );
+      } else {
+        console.error("❌ [GeminiService Error]:", error.message);
+      }
       return null;
     }
   }
 
-  // ... (mantenha as funções validateAndCreate e buildSystemContext iguais ao passo anterior)
   private async validateAndCreate(
     nightclubId: string,
     nightclub: any,
@@ -119,6 +164,16 @@ export class GeminiService {
     try {
       const requestedDate = startOfDay(new Date(args.date));
       const today = startOfDay(new Date());
+
+      const settings = nightclub.settings || {};
+      const maxDays = settings.reservationLeadTimeDays || 30;
+      const limitDate = addDays(today, maxDays);
+
+      if (isBefore(requestedDate, today))
+        return "Erro: Não aceitamos reservas para datas passadas.";
+      if (isAfter(requestedDate, limitDate))
+        return `Erro: Só aceitamos reservas com até ${maxDays} dias de antecedência.`;
+
       const space = await prisma.space.findFirst({
         where: {
           nightclubId,
@@ -126,7 +181,19 @@ export class GeminiService {
           status: "ACTIVE",
         },
       });
+
       if (!space) return `Erro: O setor '${args.spaceName}' não existe.`;
+
+      const existing = await prisma.reservation.findFirst({
+        where: {
+          spaceId: space.id,
+          date: requestedDate,
+          status: { in: ["CONFIRMED", "PENDING"] },
+        },
+      });
+
+      if (existing) return `Erro: O ${space.name} já está ocupado nesta data.`;
+
       const customer = await prisma.customer.upsert({
         where: {
           email:
@@ -140,6 +207,7 @@ export class GeminiService {
             args.customerEmail || `user-${args.customerPhone}@reservas.com`,
         },
       });
+
       const reservation = await prisma.reservation.create({
         data: {
           nightclubId,
@@ -153,9 +221,10 @@ export class GeminiService {
           status: "PENDING",
         },
       });
-      return `Sucesso! Reserva #${reservation.id.substring(0, 5)} criada.`;
-    } catch (e: any) {
-      return `Erro: ${e.message}`;
+
+      return `Sucesso! Reserva #${reservation.id.substring(0, 5)} criada para ${args.customerName}.`;
+    } catch (error: any) {
+      return `Erro sistêmico: ${error.message}`;
     }
   }
 
@@ -163,6 +232,14 @@ export class GeminiService {
     const spaces = (nightclub.spaces || [])
       .map((s: any) => `- ${s.name}: R$ ${s.price}`)
       .join("\n");
-    return `VOCÊ É A YASMIN DA ${nightclub.name.toUpperCase()}.\nSETORES:\n${spaces}\nPROMPT: ${nightclub.aiAgent?.systemPrompt}`;
+
+    return `
+      VOCÊ É O ASSISTENTE DA ${nightclub.name.toUpperCase()}.
+      HOJE É: ${format(new Date(), "yyyy-MM-dd")}.
+      SETORES:
+      ${spaces}
+      REGRAS: Use 'create_reservation' apenas com Nome, Telefone, Data e Setor.
+      PERSONALIDADE: ${nightclub.aiAgent?.systemPrompt || "Atendente prestativa"}
+    `;
   }
 }
