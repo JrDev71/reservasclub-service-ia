@@ -1,81 +1,109 @@
 import { Request, Response } from "express";
 import { prisma } from "../lib/prisma";
-import { processarMensagemIA } from "../services/gemini.service";
+import { GeminiService } from "../services/gemini.service";
+import axios from "axios";
+
+// Instanciamos o serviço que configuramos no passo anterior
+const geminiService = new GeminiService();
 
 export const handleEvolutionWebhook = async (req: Request, res: Response) => {
   try {
     const body = req.body;
 
-    // A Evolution API envia eventos diferentes. Focamos apenas no evento de mensagens recebidas
+    // 1. Filtragem de Eventos: Só nos interessa mensagens novas
     if (body.event !== "messages.upsert") {
       return res.status(200).send("Evento ignorado");
     }
 
-    // Extrai o nome da instância (ex: upbar_123) e os dados da mensagem
     const instanceName = body.instance;
     const messageData = body.data;
 
-    // Ignora mensagens enviadas pelo próprio bot ou mensagens de protocolo do sistema
+    // 2. Segurança: Ignora mensagens do próprio bot ou de sistema
     if (messageData.key.fromMe || messageData.message?.protocolMessage) {
       return res.status(200).send("Mensagem própria ignorada");
     }
 
-    // Extrai o texto da mensagem da estrutura JSON da Evolution
+    // 3. Extração do Texto e do Remetente
+    const customerJid = messageData.key.remoteJid; // ID do cliente no WhatsApp
     const textMessage =
       messageData.message?.conversation ||
       messageData.message?.extendedTextMessage?.text;
 
-    if (!textMessage) {
-      return res.status(200).send("Mensagem sem texto ignorada");
+    if (!textMessage || !customerJid) {
+      return res.status(200).send("Dados incompletos");
     }
 
-    // 1. Busca a instância no banco de dados e traz as configurações da balada e da IA junto (baseado no schema que você enviou)
+    // 4. Busca a Instância e o Agente de IA
     const whatsappInstance = await prisma.whatsappInstance.findUnique({
       where: { instanceName },
       include: {
         nightclub: {
-          include: {
-            aiAgent: true,
-          },
+          include: { aiAgent: true },
         },
       },
     });
 
-    if (!whatsappInstance) {
-      console.log(
-        `[Webhook] Instância ${instanceName} não encontrada no banco.`,
-      );
-      return res.status(404).send("Instância não encontrada");
+    if (!whatsappInstance || !whatsappInstance.nightclub?.aiAgent?.isActive) {
+      return res.status(200).send("IA Inativa ou Instância não encontrada");
     }
 
-    const aiAgent = whatsappInstance.nightclub?.aiAgent;
+    const nightclubId = whatsappInstance.nightclubId;
 
-    if (!aiAgent || !aiAgent.isActive) {
-      console.log(
-        `[Webhook] IA inativa ou não configurada para a instância ${instanceName}.`,
-      );
-      return res.status(200).send("IA inativa");
-    }
+    // 5. PROCESSAMENTO: Chama o "Cérebro" (Gemini)
+    console.log(`[Webhook] IA processando mensagem para: ${instanceName}`);
 
-    // 2. Envia a mensagem para o Gemini processar com o prompt correto daquela balada
-    console.log(`[Webhook] Processando mensagem para ${instanceName}...`);
-
-    const respostaIA = await processarMensagemIA(
-      aiAgent.systemPrompt,
+    // O GeminiService agora busca os preços e o treinamento dinamicamente
+    const aiResponse = await geminiService.generateResponse(
+      nightclubId,
+      customerJid,
       textMessage,
     );
 
-    // 3. Extrai a resposta da IA (A parte do Function Calling implementaremos depois de testar o texto simples)
-    const textoResposta = respostaIA.text();
-    console.log(`[Gemini] Resposta gerada:`, textoResposta);
+    if (!aiResponse) {
+      return res.status(200).send("IA optou por não responder");
+    }
 
-    // TODO: No próximo passo vamos implementar o envio dessa 'textoResposta' de volta para o WhatsApp via Evolution API
+    // 6. ENVIO: Devolve a resposta para a Evolution API (WhatsApp)
+    await sendToWhatsApp(instanceName, customerJid, aiResponse);
 
-    return res
-      .status(200)
-      .json({ success: true, message: "Processado com sucesso" });
-  } catch (error) {
-    console.error("[Webhook Error]", error);
-    return res.status(500).json({ error: "Erro interno no servidor" });
+    return res.status(200).json({ success: true });
+  } catch (error: any) {
+    console.error("❌ [Webhook Error]:", error.message);
+    // Em produção, não retornamos erro 500 para o Webhook para evitar loops de retry do servidor de origem
+    return res.status(200).send("Erro processado internamente");
   }
 };
+
+/**
+ * 📲 Função auxiliar para enviar a mensagem via Evolution API
+ */
+async function sendToWhatsApp(instanceName: string, jid: string, text: string) {
+  const baseUrl = process.env.EVOLUTION_API_URL;
+  const apiKey = process.env.EVOLUTION_API_KEY;
+
+  try {
+    await axios.post(
+      `${baseUrl}/message/sendText/${instanceName}`,
+      {
+        number: jid,
+        options: {
+          delay: 1200, // Simula tempo de leitura/digitação
+          presence: "composing", // Mostra "Digitando..." no WhatsApp
+          linkPreview: false,
+        },
+        textMessage: {
+          text: text,
+        },
+      },
+      {
+        headers: { apikey: apiKey },
+      },
+    );
+    console.log(`✅ [WhatsApp] Resposta enviada para ${jid}`);
+  } catch (error: any) {
+    console.error(
+      "❌ [WhatsApp Send Error]:",
+      error.response?.data || error.message,
+    );
+  }
+}
