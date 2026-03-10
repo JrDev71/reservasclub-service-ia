@@ -11,10 +11,24 @@ export class GeminiService {
 
   constructor() {
     const apiKey = process.env.GEMINI_API_KEY;
-    if (!apiKey) {
-      console.error("❌ [GeminiService]: GEMINI_API_KEY ausente!");
-    }
     this.genAI = new GoogleGenerativeAI(apiKey || "");
+
+    // 🔍 SCANNER DE MODELOS - Vai rodar assim que o servidor subir
+    this.debugAvailableModels(apiKey || "");
+  }
+
+  private async debugAvailableModels(key: string) {
+    try {
+      const resp = await axios.get(
+        `https://generativelanguage.googleapis.com/v1beta/models?key=${key}`,
+      );
+      const names = resp.data.models.map((m: any) =>
+        m.name.replace("models/", ""),
+      );
+      console.log("✅ [Gemini Debug] Modelos que sua chave PODE usar:", names);
+    } catch (e: any) {
+      console.error("❌ [Gemini Debug] Erro ao listar modelos:", e.message);
+    }
   }
 
   private tools = [
@@ -22,7 +36,8 @@ export class GeminiService {
       functionDeclarations: [
         {
           name: "create_reservation",
-          description: "Cria uma nova reserva validando disponibilidade.",
+          description:
+            "Cria uma nova reserva validando disponibilidade e regras da casa.",
           parameters: {
             type: "object",
             properties: {
@@ -62,12 +77,9 @@ export class GeminiService {
       const nightclub = responseMain.data;
       if (!nightclub || !nightclub.aiAgent?.isActive) return null;
 
-      // 🛠️ TENTATIVA 2: Usando o identificador mais estável
-      const modelName = "gemini-1.5-flash";
-      console.log(`[GeminiService] Chamando modelo: ${modelName}`);
-
+      // 🛠️ TENTATIVA: Usando o 'latest' que costuma resolver o 404
       const model = this.genAI.getGenerativeModel({
-        model: modelName,
+        model: "gemini-1.5-flash-latest",
         tools: this.tools as any,
       });
 
@@ -113,6 +125,7 @@ export class GeminiService {
     }
   }
 
+  // ... (mantenha validateAndCreate e buildSystemContext iguais)
   private async validateAndCreate(
     nightclubId: string,
     nightclub: any,
@@ -128,7 +141,6 @@ export class GeminiService {
         },
       });
       if (!space) return `Erro: O setor '${args.spaceName}' não existe.`;
-
       const customer = await prisma.customer.upsert({
         where: {
           email:
@@ -142,7 +154,6 @@ export class GeminiService {
             args.customerEmail || `user-${args.customerPhone}@reservas.com`,
         },
       });
-
       const reservation = await prisma.reservation.create({
         data: {
           nightclubId,
@@ -166,6 +177,6 @@ export class GeminiService {
     const spaces = (nightclub.spaces || [])
       .map((s: any) => `- ${s.name}: R$ ${s.price}`)
       .join("\n");
-    return `VOCÊ É O ASSISTENTE DA ${nightclub.name.toUpperCase()}.\nSETORES:\n${spaces}\nPERSONALIDADE: ${nightclub.aiAgent?.systemPrompt}`;
+    return `VOCÊ É O ASSISTENTE DA ${nightclub.name.toUpperCase()}.\nSETORES:\n${spaces}\nPROMPT: ${nightclub.aiAgent?.systemPrompt}`;
   }
 }
