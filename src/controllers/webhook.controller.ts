@@ -7,11 +7,19 @@ import axios from "axios";
 const geminiService = new GeminiService();
 
 export const handleEvolutionWebhook = async (req: Request, res: Response) => {
+  // 🔥 ESSE LOG VAI GRITAR ASSIM QUE A EVOLUTION BATER NA PORTA
+  console.log("\n=============================================");
+  console.log("🔥 [WEBHOOK] BATEU NA PORTA DO RENDER!");
+  console.log("📦 DADOS DO CORPO (BODY):", JSON.stringify(req.body, null, 2));
+  console.log("=============================================\n");
+
   try {
     const body = req.body;
 
-    // 1. Filtragem de Eventos: Só nos interessa mensagens novas
-    if (body.event !== "messages.upsert") {
+    // 1. Filtragem de Eventos: Deixamos case-insensitive para não morrer silenciosamente
+    const eventName = body.event || (body.events && body.events[0]);
+    if (String(eventName).toLowerCase() !== "messages.upsert") {
+      console.log(`⚠️ [Webhook] Evento ignorado. Recebido: ${eventName}`);
       return res.status(200).send("Evento ignorado");
     }
 
@@ -20,6 +28,7 @@ export const handleEvolutionWebhook = async (req: Request, res: Response) => {
 
     // 2. Segurança: Ignora mensagens do próprio bot ou de sistema
     if (messageData.key.fromMe || messageData.message?.protocolMessage) {
+      console.log("⚠️ [Webhook] Mensagem própria do bot ignorada.");
       return res.status(200).send("Mensagem própria ignorada");
     }
 
@@ -30,6 +39,7 @@ export const handleEvolutionWebhook = async (req: Request, res: Response) => {
       messageData.message?.extendedTextMessage?.text;
 
     if (!textMessage || !customerJid) {
+      console.log("⚠️ [Webhook] Dados incompletos. Faltou texto ou JID.");
       return res.status(200).send("Dados incompletos");
     }
 
@@ -44,13 +54,19 @@ export const handleEvolutionWebhook = async (req: Request, res: Response) => {
     });
 
     if (!whatsappInstance || !whatsappInstance.nightclub?.aiAgent?.isActive) {
+      console.log(
+        "⚠️ [Webhook] IA Inativa ou Instância não encontrada no banco.",
+      );
       return res.status(200).send("IA Inativa ou Instância não encontrada");
     }
 
     const nightclubId = whatsappInstance.nightclubId;
 
     // 5. PROCESSAMENTO: Chama o "Cérebro" (Gemini)
-    console.log(`[Webhook] IA processando mensagem para: ${instanceName}`);
+    console.log(
+      `[Webhook] IA processando mensagem de ${customerJid} para: ${instanceName}`,
+    );
+    console.log(`[Webhook] Texto recebido: "${textMessage}"`);
 
     // O GeminiService agora busca os preços e o treinamento dinamicamente
     const aiResponse = await geminiService.generateResponse(
@@ -60,6 +76,9 @@ export const handleEvolutionWebhook = async (req: Request, res: Response) => {
     );
 
     if (!aiResponse) {
+      console.log(
+        "⚠️ [Webhook] Gemini retornou vazio. IA optou por não responder.",
+      );
       return res.status(200).send("IA optou por não responder");
     }
 
@@ -82,6 +101,7 @@ async function sendToWhatsApp(instanceName: string, jid: string, text: string) {
   const apiKey = process.env.EVOLUTION_API_KEY;
 
   try {
+    console.log(`[WhatsApp] Tentando enviar resposta para ${jid}...`);
     await axios.post(
       `${baseUrl}/message/sendText/${instanceName}`,
       {
@@ -99,7 +119,7 @@ async function sendToWhatsApp(instanceName: string, jid: string, text: string) {
         headers: { apikey: apiKey },
       },
     );
-    console.log(`✅ [WhatsApp] Resposta enviada para ${jid}`);
+    console.log(`✅ [WhatsApp] Resposta enviada com sucesso para ${jid}`);
   } catch (error: any) {
     console.error(
       "❌ [WhatsApp Send Error]:",
