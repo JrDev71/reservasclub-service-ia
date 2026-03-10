@@ -7,7 +7,6 @@ const EVOLUTION_API_URL =
   process.env.EVOLUTION_API_URL || "http://localhost:8080";
 const EVOLUTION_API_KEY = process.env.EVOLUTION_API_KEY || "";
 
-// Cria um cliente Axios pré-configurado com a URL e a chave de segurança
 const evolutionClient = axios.create({
   baseURL: EVOLUTION_API_URL,
   headers: {
@@ -16,10 +15,6 @@ const evolutionClient = axios.create({
   },
 });
 
-/**
- * Cria uma nova instância de WhatsApp para uma balada.
- * Retorna os dados da conexão, incluindo o QR Code em base64.
- */
 export const criarInstancia = async (instanceName: string) => {
   try {
     const response = await evolutionClient.post("/instance/create", {
@@ -37,9 +32,6 @@ export const criarInstancia = async (instanceName: string) => {
   }
 };
 
-/**
- * Configura a URL de Webhook para onde a Evolution deve enviar as mensagens recebidas.
- */
 export const configurarWebhook = async (
   instanceName: string,
   webhookUrl: string,
@@ -64,5 +56,36 @@ export const configurarWebhook = async (
       error.response?.data || error.message,
     );
     throw new Error("Falha ao configurar webhook");
+  }
+};
+
+/**
+ * Envia uma mensagem de texto para um número específico via Evolution API
+ */
+export const enviarMensagemWhatsApp = async (
+  instanceName: string,
+  number: string,
+  text: string,
+) => {
+  try {
+    const response = await evolutionClient.post(
+      `/message/sendText/${instanceName}`,
+      {
+        number: number,
+        options: {
+          delay: 1200, // Delay humano de 1.2 segundos
+          presence: "composing",
+        },
+        textMessage: {
+          text: text,
+        },
+      },
+    );
+    return response.data;
+  } catch (error: any) {
+    console.error(
+      `[Evolution API] Erro ao enviar mensagem para ${number}:`,
+      error.response?.data || error.message,
+    );
   }
 };
