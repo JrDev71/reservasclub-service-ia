@@ -12,11 +12,16 @@ export class GeminiService {
   constructor() {
     const apiKey = process.env.GEMINI_API_KEY;
     if (!apiKey) {
-      console.error("❌ [GeminiService]: GEMINI_API_KEY não encontrada!");
+      console.error(
+        "❌ [GeminiService]: GEMINI_API_KEY não encontrada no Render!",
+      );
     }
     this.genAI = new GoogleGenerativeAI(apiKey || "");
   }
 
+  /**
+   * 🛠️ Definição das Ferramentas (Tools) que a IA pode usar
+   */
   private tools = [
     {
       functionDeclarations: [
@@ -61,13 +66,16 @@ export class GeminiService {
     message: string,
   ) {
     try {
+      // 1. Busca dados da balada na ROTA VIP de serviço
       console.log(
-        `[GeminiService] Consultando rota VIP em: ${this.MAIN_API_URL}/nightclubs/service-ia/${nightclubId}`,
+        `[GeminiService] Consultando rota VIP: ${this.MAIN_API_URL}/nightclubs/service-ia/${nightclubId}`,
       );
 
       const responseMain = await axios
         .get(`${this.MAIN_API_URL}/nightclubs/service-ia/${nightclubId}`, {
-          headers: { "x-internal-key": this.MAIN_API_TOKEN },
+          headers: {
+            "x-internal-key": this.MAIN_API_TOKEN,
+          },
         })
         .catch((err) => {
           throw new Error(
@@ -82,7 +90,7 @@ export class GeminiService {
         return null;
       }
 
-      // 🛠️ USANDO O MODELO 'LATEST' DA SUA LISTA
+      // 2. Configura o modelo (Usando o 'latest' que validamos no scanner)
       const model = this.genAI.getGenerativeModel({
         model: "gemini-flash-latest",
         tools: this.tools as any,
@@ -105,13 +113,18 @@ export class GeminiService {
         ],
       });
 
+      // 3. Processa a mensagem
       const result = await chat.sendMessage(message);
       const chatResponse = result.response;
       const call = chatResponse.functionCalls()?.[0];
 
+      // 4. Se a IA decidir criar uma reserva
       if (call && call.name === "create_reservation") {
         const args: any = call.args;
-        console.log(`[GeminiService] IA disparando reserva:`, args);
+        console.log(
+          `[GeminiService] IA disparando ferramenta de reserva:`,
+          args,
+        );
 
         const reservationResult = await this.validateAndCreate(
           nightclubId,
@@ -134,17 +147,16 @@ export class GeminiService {
       return chatResponse.text();
     } catch (error: any) {
       console.error("❌ [GeminiService Error]:", error.message);
-
-      // Se ainda der 429, a gente avisa no log para o dono saber que precisa de faturamento
       if (error.message.includes("429")) {
-        console.error(
-          "⚠️ [ALERTA]: Cota do Gemini estourada. Hora de ativar o Billing!",
-        );
+        return "Desculpe, estou recebendo muitas mensagens. Pode tentar novamente em um minuto?";
       }
       return null;
     }
   }
 
+  /**
+   * 🔍 Validação Pesada e Criação de Reserva
+   */
   private async validateAndCreate(
     nightclubId: string,
     nightclub: any,
@@ -154,6 +166,7 @@ export class GeminiService {
       const requestedDate = startOfDay(new Date(args.date));
       const today = startOfDay(new Date());
 
+      // Validação de Antecedência
       const settings = nightclub.settings || {};
       const maxDays = settings.reservationLeadTimeDays || 30;
       const limitDate = addDays(today, maxDays);
@@ -161,8 +174,9 @@ export class GeminiService {
       if (isBefore(requestedDate, today))
         return "Erro: Não aceitamos reservas para datas passadas.";
       if (isAfter(requestedDate, limitDate))
-        return `Erro: Reservas apenas até ${maxDays} dias à frente.`;
+        return `Erro: Reservas permitidas apenas para os próximos ${maxDays} dias.`;
 
+      // Busca o Setor (Space)
       const space = await prisma.space.findFirst({
         where: {
           nightclubId,
@@ -171,8 +185,10 @@ export class GeminiService {
         },
       });
 
-      if (!space) return `Erro: O setor '${args.spaceName}' não existe.`;
+      if (!space)
+        return `Erro: O setor '${args.spaceName}' não foi encontrado.`;
 
+      // Check de Disponibilidade
       const existing = await prisma.reservation.findFirst({
         where: {
           spaceId: space.id,
@@ -181,8 +197,10 @@ export class GeminiService {
         },
       });
 
-      if (existing) return `Erro: O ${space.name} já está ocupado nesta data.`;
+      if (existing)
+        return `Erro: O ${space.name} já está reservado para esta data.`;
 
+      // CRM: Upsert Cliente
       const customer = await prisma.customer.upsert({
         where: {
           email:
@@ -197,6 +215,7 @@ export class GeminiService {
         },
       });
 
+      // Cria a Reserva
       const reservation = await prisma.reservation.create({
         data: {
           nightclubId,
@@ -211,25 +230,35 @@ export class GeminiService {
         },
       });
 
-      return `Sucesso! Reserva #${reservation.id.substring(0, 5)} criada para ${args.customerName}. Link de pagamento em instantes.`;
+      return `Sucesso! Reserva #${reservation.id.substring(0, 5)} criada para ${args.customerName}. O link de pagamento será gerado em seguida.`;
     } catch (error: any) {
-      return `Erro sistêmico: ${error.message}`;
+      return `Erro ao processar reserva: ${error.message}`;
     }
   }
 
+  /**
+   * 🧠 Constrói o contexto dinâmico da balada (Personalidade SaaS)
+   */
   private buildSystemContext(nightclub: any) {
     const spaces = (nightclub.spaces || [])
       .map((s: any) => `- ${s.name}: R$ ${s.price}`)
       .join("\n");
 
     return `
-      VOCÊ É O ASSISTENTE DA ${nightclub.name.toUpperCase()}.
-      DATA ATUAL: ${format(new Date(), "yyyy-MM-dd")}.
-      SETORES E PREÇOS:
+      VOCÊ É O AGENTE DE ATENDIMENTO DA ${nightclub.name.toUpperCase()}.
+      HOJE É: ${format(new Date(), "yyyy-MM-dd")}.
+
+      SETORES DISPONÍVEIS:
       ${spaces}
-      REGRAS:
-      1. Use 'create_reservation' somente quando tiver Nome, Telefone, Data e Setor.
-      2. PERSONALIDADE DEFINIDA PELO DONO: ${nightclub.aiAgent?.systemPrompt || "Seja cordial e eficiente."}
+
+      REGRAS DE FORMATAÇÃO (WHATSAPP):
+      - Use apenas *asteriscos* para negrito.
+      - Não use títulos com #, use apenas negrito.
+      - Respostas curtas, separadas por quebras de linha.
+      - Use a ferramenta 'create_reservation' apenas quando tiver Nome, Telefone, Data e Setor.
+
+      PERSONALIDADE DEFINIDA PELO DONO DA BALADA:
+      ${nightclub.aiAgent?.systemPrompt || "Seja cordial e ajude com as reservas."}
     `;
   }
 }
