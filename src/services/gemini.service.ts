@@ -9,25 +9,18 @@ export class GeminiService {
     process.env.MAIN_API_URL || "http://localhost:3000";
   private readonly MAIN_API_TOKEN = process.env.MAIN_API_TOKEN;
 
-  // 🧠 MEMÓRIA DE CURTO PRAZO: Guarda o histórico da conversa por telefone do cliente
-  private memoryCache = new Map<
-    string,
-    { role: string; parts: { text: string }[] }[]
-  >();
-
-  // 🛡️ CASCATA DE MODELOS (FALLBACK): Se um falhar, tenta o próximo na mesma fração de segundo
+  // 🛡️ LISTA DE BLINDAGEM COMPLETA
   private fallbackModels = [
-    "gemini-flash-latest",
     "gemini-2.0-flash",
     "gemini-2.5-flash",
+    "gemini-2.0-flash-lite",
+    "gemini-flash-latest",
     "gemini-1.5-flash",
+    "gemini-pro-latest",
   ];
 
   constructor() {
     const apiKey = process.env.GEMINI_API_KEY;
-    if (!apiKey) {
-      console.error("❌ [GeminiService]: GEMINI_API_KEY não encontrada!");
-    }
     this.genAI = new GoogleGenerativeAI(apiKey || "");
   }
 
@@ -35,31 +28,40 @@ export class GeminiService {
     {
       functionDeclarations: [
         {
-          name: "create_reservation",
+          name: "get_available_spaces",
           description:
-            "Cria uma nova reserva para o cliente e retorna as instruções de pagamento PIX.",
+            "Consulta quais setores (camarotes, bistrôs) estão disponíveis para uma data específica.",
           parameters: {
             type: "object",
             properties: {
-              customerName: {
+              date: {
                 type: "string",
-                description: "Nome completo do cliente",
+                description: "Data da consulta (YYYY-MM-DD)",
               },
+            },
+            required: ["date"],
+          },
+        },
+        {
+          name: "create_reservation",
+          description:
+            "Cria a reserva no sistema e gera o pagamento PIX para o cliente.",
+          parameters: {
+            type: "object",
+            properties: {
+              customerName: { type: "string", description: "Nome completo" },
               customerPhone: {
                 type: "string",
-                description: "Telefone do cliente (apenas números)",
+                description: "Telefone com DDD",
               },
               customerEmail: {
                 type: "string",
-                description: "E-mail válido do cliente",
+                description: "E-mail obrigatório",
               },
-              date: {
-                type: "string",
-                description: "Data da reserva no formato YYYY-MM-DD",
-              },
+              date: { type: "string", description: "Data (YYYY-MM-DD)" },
               spaceName: {
                 type: "string",
-                description: "Nome do setor desejado",
+                description: "Nome do setor (ex: Camarote 1)",
               },
             },
             required: [
@@ -69,25 +71,6 @@ export class GeminiService {
               "date",
               "spaceName",
             ],
-          },
-        },
-        {
-          name: "cancel_reservation",
-          description:
-            "Cancela uma reserva existente pelo telefone do cliente e data.",
-          parameters: {
-            type: "object",
-            properties: {
-              customerPhone: {
-                type: "string",
-                description: "Telefone do cliente (apenas números)",
-              },
-              date: {
-                type: "string",
-                description: "Data da reserva a ser cancelada (YYYY-MM-DD)",
-              },
-            },
-            required: ["customerPhone", "date"],
           },
         },
       ],
@@ -106,32 +89,35 @@ export class GeminiService {
           headers: { "x-internal-key": this.MAIN_API_TOKEN },
         },
       );
-
       const nightclub = responseMain.data;
       if (!nightclub || !nightclub.aiAgent?.isActive) return null;
 
-      // Recupera ou cria a memória do cliente
-      const sessionKey = `${nightclubId}-${customerPhone}`;
-      if (!this.memoryCache.has(sessionKey)) {
-        this.memoryCache.set(sessionKey, []);
-      }
-      const userHistory = this.memoryCache.get(sessionKey)!;
+      // 🧠 BUSCA MEMÓRIA NO BANCO DE DADOS (Últimas 12 mensagens para contexto rico)
+      const chatHistory = await prisma.aiMemory.findMany({
+        where: { nightclubId, customerPhone },
+        orderBy: { createdAt: "asc" },
+        take: 12,
+      });
 
-      // Monta o contexto base + memória
+      // Formata para o padrão do Google SDK
+      const formattedHistory = chatHistory.map((m) => ({
+        role: m.role,
+        parts: [{ text: m.content }],
+      }));
+
       const baseHistory = [
         { role: "user", parts: [{ text: this.buildSystemContext(nightclub) }] },
         {
           role: "model",
           parts: [
             {
-              text: "Compreendido. Estou pronto para ajudar e tenho acesso ao banco de dados.",
+              text: "Sistema Sincronizado com Memória Persistente. Estou pronto.",
             },
           ],
         },
-        ...userHistory,
+        ...formattedHistory,
       ];
 
-      // 🛡️ SISTEMA DE BLINDAGEM IMPENETRÁVEL (Retry loop nos modelos)
       for (const modelName of this.fallbackModels) {
         try {
           const model = this.genAI.getGenerativeModel({
@@ -140,36 +126,27 @@ export class GeminiService {
           });
           const chat = model.startChat({ history: baseHistory });
 
-          const result = await chat.sendMessage(message);
-          const chatResponse = result.response;
-          const call = chatResponse.functionCalls()?.[0];
+          let result = await chat.sendMessage(message);
+          let chatResponse = result.response;
+          let call = chatResponse.functionCalls()?.[0];
 
-          let finalResponseText = chatResponse.text();
-
-          // Se a IA decidiu usar uma ferramenta
-          if (call) {
-            const args: any = call.args;
+          while (call) {
             let functionResult = "";
 
-            if (call.name === "create_reservation") {
-              console.log(
-                `[GeminiService - ${modelName}] IA criando reserva:`,
-                args,
+            if (call.name === "get_available_spaces") {
+              functionResult = await this.getAvailableSpaces(
+                nightclubId,
+                call.args.date,
               );
-              functionResult = await this.validateAndCreate(
+            } else if (call.name === "create_reservation") {
+              functionResult = await this.createReservationAndPayment(
                 nightclubId,
                 nightclub,
-                args,
+                call.args,
               );
-            } else if (call.name === "cancel_reservation") {
-              console.log(
-                `[GeminiService - ${modelName}] IA cancelando reserva:`,
-                args,
-              );
-              functionResult = await this.cancelReservation(nightclubId, args);
             }
 
-            const funcResponse = await chat.sendMessage([
+            const nextStep = await chat.sendMessage([
               {
                 functionResponse: {
                   name: call.name,
@@ -177,53 +154,69 @@ export class GeminiService {
                 },
               },
             ]);
-            finalResponseText = funcResponse.response.text();
+
+            chatResponse = nextStep.response;
+            call = chatResponse.functionCalls()?.[0];
           }
 
-          // Salva na memória o que o cliente disse e o que a IA respondeu
-          userHistory.push({ role: "user", parts: [{ text: message }] });
-          userHistory.push({
-            role: "model",
-            parts: [{ text: finalResponseText }],
+          const responseText = chatResponse.text();
+
+          // 💾 SALVA NA MEMÓRIA (BANCO DE DADOS)
+          await prisma.aiMemory.createMany({
+            data: [
+              { nightclubId, customerPhone, role: "user", content: message },
+              {
+                nightclubId,
+                customerPhone,
+                role: "model",
+                content: responseText,
+              },
+            ],
           });
 
-          // Mantém a memória curta para não estourar tokens (últimas 10 mensagens)
-          if (userHistory.length > 10) userHistory.splice(0, 2);
-
-          // Se chegou até aqui sem dar erro, retorna e encerra o loop de tentativas!
-          return finalResponseText;
+          return responseText;
         } catch (error: any) {
-          // 🚨 A MÁGICA ESTÁ AQUI: Agora engolimos QUALQUER erro (rede, cota, timeout) e forçamos o próximo modelo!
           console.warn(
-            `⚠️ [Blindagem] Falha no modelo ${modelName} (${error.message}). Pulando para o próximo da fila...`,
+            `⚠️ [Blindagem] Falha no ${modelName} (${error.message}). Tentando próximo...`,
           );
           continue;
         }
       }
-
-      // Se o loop terminar e TODOS os modelos falharem na mesma requisição
-      return "Nosso sistema está com uma fila de atendimento grande no momento. Poderia me mandar um 'Oi' novamente em 1 minuto?";
-    } catch (error: any) {
-      console.error("❌ [GeminiService Error Principal]:", error.message);
+      return "Estou com um problema técnico agora, mas já te retorno.";
+    } catch (e) {
       return null;
     }
   }
 
-  // ... [validateAndCreate e cancelReservation permanecem iguais à última versão] ...
-  private async validateAndCreate(
+  private async getAvailableSpaces(nightclubId: string, dateStr: string) {
+    const date = startOfDay(new Date(dateStr));
+    const allSpaces = await prisma.space.findMany({
+      where: { nightclubId, status: "ACTIVE" },
+    });
+    const occupiedReservations = await prisma.reservation.findMany({
+      where: { nightclubId, date, status: { in: ["CONFIRMED", "PENDING"] } },
+      select: { spaceId: true },
+    });
+    const occupiedIds = occupiedReservations.map((r) => r.spaceId);
+    const available = allSpaces.filter((s) => !occupiedIds.includes(s.id));
+
+    if (available.length === 0)
+      return "Nenhum setor disponível para esta data.";
+    return (
+      "Setores Disponíveis para " +
+      dateStr +
+      ":\n" +
+      available.map((s) => `- ${s.name} (R$ ${s.price})`).join("\n")
+    );
+  }
+
+  private async createReservationAndPayment(
     nightclubId: string,
     nightclub: any,
     args: any,
   ) {
     try {
-      const requestedDate = startOfDay(new Date(args.date));
-      const today = startOfDay(new Date());
-      const maxDays = nightclub.settings?.reservationLeadTimeDays || 30;
-
-      if (isBefore(requestedDate, today)) return "Falha: Data no passado.";
-      if (isAfter(requestedDate, addDays(today, maxDays)))
-        return `Falha: O limite de antecedência é ${maxDays} dias.`;
-
+      const date = startOfDay(new Date(args.date));
       const space = await prisma.space.findFirst({
         where: {
           nightclubId,
@@ -231,18 +224,16 @@ export class GeminiService {
           status: "ACTIVE",
         },
       });
-      if (!space)
-        return `Falha: Setor '${args.spaceName}' inexistente ou inativo.`;
+      if (!space) return "Erro: Setor não encontrado.";
 
-      const existing = await prisma.reservation.findFirst({
+      const check = await prisma.reservation.findFirst({
         where: {
           spaceId: space.id,
-          date: requestedDate,
+          date,
           status: { in: ["CONFIRMED", "PENDING"] },
         },
       });
-      if (existing)
-        return `Falha: O ${space.name} já está reservado nesta data.`;
+      if (check) return "Erro: Este setor acabou de ser ocupado.";
 
       const customer = await prisma.customer.upsert({
         where: { email: args.customerEmail },
@@ -262,55 +253,43 @@ export class GeminiService {
           customerName: customer.name,
           customerPhone: customer.phone,
           customerEmail: customer.email,
-          date: requestedDate,
+          date,
           amount: space.price,
           status: "PENDING",
         },
       });
 
-      return `SUCESSO! Reserva #${reservation.id.substring(0, 5)} criada. VALOR: R$ ${space.price}. INSTRUÇÃO PARA A IA: Diga que a reserva está pré-aprovada e que o PIX será enviado em breve.`;
-    } catch (error: any) {
-      return `Erro no banco: ${error.message}`;
-    }
-  }
+      try {
+        const pixResponse = await axios.post(
+          `${this.MAIN_API_URL}/payments/generate-pix`,
+          {
+            reservationId: reservation.id,
+            nightclubId: nightclubId,
+          },
+          { headers: { "x-internal-key": this.MAIN_API_TOKEN } },
+        );
 
-  private async cancelReservation(nightclubId: string, args: any) {
-    try {
-      const targetDate = startOfDay(new Date(args.date));
-      const reservation = await prisma.reservation.findFirst({
-        where: {
-          nightclubId,
-          customerPhone: args.customerPhone,
-          date: targetDate,
-          status: { in: ["PENDING", "CONFIRMED"] },
-        },
-      });
-      if (!reservation) return "Falha: Nenhuma reserva ativa encontrada.";
-
-      await prisma.reservation.update({
-        where: { id: reservation.id },
-        data: { status: "CANCELED" },
-      });
-      return "Sucesso! Reserva cancelada.";
-    } catch (error: any) {
-      return `Erro ao cancelar: ${error.message}`;
+        return `SUCESSO! Reserva #${reservation.id.substring(0, 5)} criada. 
+                COPIE O PIX PARA PAGAR:
+                ${pixResponse.data.pixCode}
+                
+                O seu QR Code de entrada será enviado após o pagamento.`;
+      } catch (err) {
+        return "Reserva criada, mas o PIX falhou. Enviaremos em instantes.";
+      }
+    } catch (e: any) {
+      return "Erro: " + e.message;
     }
   }
 
   private buildSystemContext(nightclub: any) {
-    const spaces = (nightclub.spaces || [])
-      .map((s: any) => `- ${s.name}: R$ ${s.price}`)
-      .join("\n");
     return `
-      VOCÊ É O AGENTE DE ATENDIMENTO DA ${nightclub.name.toUpperCase()}.
-      HOJE É: ${format(new Date(), "yyyy-MM-dd")}.
-      SETORES DISPONÍVEIS E PREÇOS:
-      ${spaces}
+      VOCÊ É A INTELIGÊNCIA VENDAS DA ${nightclub.name.toUpperCase()}.
       REGRAS:
-      1. Para criar reserva, COLETE: Nome, Telefone, EMAIL e Setor.
-      2. Use APENAS *asteriscos* para negrito. Sem #.
-      COMPORTAMENTO:
-      ${nightclub.aiAgent?.systemPrompt || "Seja eficiente."}
+      1. Use 'get_available_spaces' antes de confirmar datas.
+      2. Peça SEMPRE: Nome, Telefone e E-mail.
+      3. Entregue o código PIX retornado pela ferramenta.
+      4. Personalidade: ${nightclub.aiAgent?.systemPrompt || "Cordial."}
     `;
   }
 }
