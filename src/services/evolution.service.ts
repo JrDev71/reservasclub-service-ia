@@ -17,7 +17,6 @@ const evolutionClient = axios.create({
 
 export const criarInstancia = async (instanceName: string) => {
   try {
-    // 🔍 LOGS DE DEBUG ESCRACHADOS (As aspas ajudam a ver espaços invisíveis)
     console.log(
       `[DEBUG Evolution] URL recebida do .env: "${EVOLUTION_API_URL}"`,
     );
@@ -54,7 +53,8 @@ export const configurarWebhook = async (
           url: webhookUrl,
           byEvents: false,
           base64: false,
-          events: ["MESSAGES_UPSERT"],
+          // 🚀 A MÁGICA ACONTECE AQUI: Adicionamos os eventos de conexão!
+          events: ["MESSAGES_UPSERT", "CONNECTION_UPDATE", "QRCODE_UPDATED"],
         },
       },
     );
@@ -69,7 +69,7 @@ export const configurarWebhook = async (
 };
 
 /**
- * Envia uma mensagem de texto para um número específico via Evolution API
+ * Envia uma mensagem de texto (Atualizado para o padrão Evolution v2)
  */
 export const enviarMensagemWhatsApp = async (
   instanceName: string,
@@ -81,13 +81,9 @@ export const enviarMensagemWhatsApp = async (
       `/message/sendText/${instanceName}`,
       {
         number: number,
-        options: {
-          delay: 1200, // Delay humano de 1.2 segundos
-          presence: "composing",
-        },
-        textMessage: {
-          text: text,
-        },
+        text: text, // 👈 Formato "flat" da v2 que consertamos ontem
+        delay: 1200,
+        linkPreview: false,
       },
     );
     return response.data;

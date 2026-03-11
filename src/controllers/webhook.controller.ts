@@ -4,41 +4,66 @@ import { GeminiService } from "../services/gemini.service";
 import axios from "axios";
 
 const geminiService = new GeminiService();
-
-// Cache simples para evitar processar a mesma mensagem duas vezes (deduplicação)
 const processedMessages = new Set<string>();
 
 export const handleEvolutionWebhook = async (req: Request, res: Response) => {
   const body = req.body;
-  const eventName = body.event || (body.events && body.events[0]);
+  const eventName = String(
+    body.event || (body.events && body.events[0]),
+  ).toLowerCase();
+  const instanceName = body.instance;
 
-  // 1. Filtragem rápida: Só mensagens novas
-  if (String(eventName).toLowerCase() !== "messages.upsert") {
-    return res.status(200).send("OK");
-  }
-
-  const messageData = body.data;
-  const messageId = messageData.key.id;
-
-  // 2. Deduplicação: Se já processamos esse ID nos últimos 2 minutos, ignora
-  if (processedMessages.has(messageId)) {
-    return res.status(200).send("Duplicate");
-  }
-
-  // 3. Segurança: Ignora mensagens próprias
-  if (messageData.key.fromMe || messageData.message?.protocolMessage) {
-    return res.status(200).send("OK");
-  }
-
-  // Registra o ID e programa para remover em 2 minutos para não vazar memória
-  processedMessages.add(messageId);
-  setTimeout(() => processedMessages.delete(messageId), 120000);
-
-  // Responder 200 OK IMEDIATAMENTE para a Evolution não tentar reenviar por timeout
+  // Responder 200 OK IMEDIATAMENTE para a Evolution não dar timeout
   res.status(200).send("Processing");
 
   try {
-    const instanceName = body.instance;
+    // =======================================================================
+    // 🛰️ NOVA ESCUTA: STATUS DE CONEXÃO (Avisa a Main API)
+    // =======================================================================
+    if (eventName === "connection.update") {
+      const status = body.data?.state || body.data?.status;
+
+      if (status) {
+        console.log(
+          `[Sentinela] Instância ${instanceName} mudou para ${status}. Avisando Main API...`,
+        );
+
+        await axios
+          .patch(
+            `${process.env.MAIN_API_URL}/nightclubs/instance/status`,
+            { instanceName, status },
+            { headers: { "x-internal-key": process.env.MAIN_API_TOKEN } }, // 👈 Usando a Rota VIP que criamos!
+          )
+          .catch((err) =>
+            console.error("❌ Erro ao avisar Main API:", err.message),
+          );
+      }
+      return;
+    }
+
+    // Se for QR Code, apenas registramos no log por enquanto
+    if (eventName === "qrcode.updated") {
+      console.log(`[Sentinela] Novo QR Code para a instância: ${instanceName}`);
+      return;
+    }
+
+    // =======================================================================
+    // 💬 ESCUTA DE MENSAGENS (O que já estava funcionando)
+    // =======================================================================
+    if (eventName !== "messages.upsert") return;
+
+    const messageData = body.data;
+    const messageId = messageData?.key?.id;
+
+    if (!messageData || !messageId) return;
+
+    // Deduplicação
+    if (processedMessages.has(messageId)) return;
+    if (messageData.key.fromMe || messageData.message?.protocolMessage) return;
+
+    processedMessages.add(messageId);
+    setTimeout(() => processedMessages.delete(messageId), 120000);
+
     const customerJid = messageData.key.remoteJid;
     const textMessage =
       messageData.message?.conversation ||
@@ -63,7 +88,6 @@ export const handleEvolutionWebhook = async (req: Request, res: Response) => {
     );
 
     if (aiResponse) {
-      // Formata a resposta do Gemini para o padrão do WhatsApp
       const formattedResponse = formatForWhatsApp(aiResponse);
       await sendToWhatsApp(instanceName, customerJid, formattedResponse);
     }
@@ -72,14 +96,11 @@ export const handleEvolutionWebhook = async (req: Request, res: Response) => {
   }
 };
 
-/**
- * ✨ Converte formatação Markdown (Gemini) para WhatsApp
- */
 function formatForWhatsApp(text: string): string {
   return text
-    .replace(/\*\*(.*?)\*\*/g, "*$1*") // **negrito** -> *negrito*
-    .replace(/__(.*?)__/g, "_$1_") // __itálico__ -> _itálico_
-    .replace(/### (.*?)(\n|$)/g, "*$1*\n") // ### Título -> *Título*
+    .replace(/\*\*(.*?)\*\*/g, "*$1*")
+    .replace(/__(.*?)__/g, "_$1_")
+    .replace(/### (.*?)(\n|$)/g, "*$1*\n")
     .replace(/## (.*?)(\n|$)/g, "*$1*\n");
 }
 
@@ -90,12 +111,7 @@ async function sendToWhatsApp(instanceName: string, jid: string, text: string) {
   try {
     await axios.post(
       `${baseUrl}/message/sendText/${instanceName}`,
-      {
-        number: jid,
-        text: text,
-        delay: 1000,
-        linkPreview: false,
-      },
+      { number: jid, text: text, delay: 1000, linkPreview: false },
       { headers: { apikey: apiKey } },
     );
     console.log(`✅ [WhatsApp] Resposta enviada para ${jid}`);
