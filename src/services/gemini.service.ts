@@ -131,7 +131,7 @@ export class GeminiService {
         ...userHistory,
       ];
 
-      // 🛡️ SISTEMA DE BLINDAGEM (Retry loop nos modelos)
+      // 🛡️ SISTEMA DE BLINDAGEM IMPENETRÁVEL (Retry loop nos modelos)
       for (const modelName of this.fallbackModels) {
         try {
           const model = this.genAI.getGenerativeModel({
@@ -190,27 +190,21 @@ export class GeminiService {
           // Mantém a memória curta para não estourar tokens (últimas 10 mensagens)
           if (userHistory.length > 10) userHistory.splice(0, 2);
 
+          // Se chegou até aqui sem dar erro, retorna e encerra o loop de tentativas!
           return finalResponseText;
         } catch (error: any) {
-          // Se for erro de cota ou sobrecarga, tenta o próximo modelo
-          if (
-            error.message.includes("429") ||
-            error.message.includes("503") ||
-            error.message.includes("404")
-          ) {
-            console.warn(
-              `⚠️ [Blindagem] Falha no modelo ${modelName}. Tentando o próximo da fila...`,
-            );
-            continue;
-          }
-          throw error; // Se for um erro bizarro, lança a exceção e sai do loop
+          // 🚨 A MÁGICA ESTÁ AQUI: Agora engolimos QUALQUER erro (rede, cota, timeout) e forçamos o próximo modelo!
+          console.warn(
+            `⚠️ [Blindagem] Falha no modelo ${modelName} (${error.message}). Pulando para o próximo da fila...`,
+          );
+          continue;
         }
       }
 
-      // Se o loop terminar e TODOS os modelos falharem
+      // Se o loop terminar e TODOS os modelos falharem na mesma requisição
       return "Nosso sistema está com uma fila de atendimento grande no momento. Poderia me mandar um 'Oi' novamente em 1 minuto?";
     } catch (error: any) {
-      console.error("❌ [GeminiService Error]:", error.message);
+      console.error("❌ [GeminiService Error Principal]:", error.message);
       return null;
     }
   }
