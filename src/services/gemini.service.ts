@@ -9,6 +9,20 @@ export class GeminiService {
     process.env.MAIN_API_URL || "http://localhost:3000";
   private readonly MAIN_API_TOKEN = process.env.MAIN_API_TOKEN;
 
+  // 🧠 MEMÓRIA DE CURTO PRAZO: Guarda o histórico da conversa por telefone do cliente
+  private memoryCache = new Map<
+    string,
+    { role: string; parts: { text: string }[] }[]
+  >();
+
+  // 🛡️ CASCATA DE MODELOS (FALLBACK): Se um falhar, tenta o próximo na mesma fração de segundo
+  private fallbackModels = [
+    "gemini-flash-latest",
+    "gemini-2.0-flash",
+    "gemini-2.5-flash",
+    "gemini-1.5-flash",
+  ];
+
   constructor() {
     const apiKey = process.env.GEMINI_API_KEY;
     if (!apiKey) {
@@ -17,9 +31,6 @@ export class GeminiService {
     this.genAI = new GoogleGenerativeAI(apiKey || "");
   }
 
-  /**
-   * 🛠️ Ferramentas (Tools) da IA: Criar e Cancelar Reservas
-   */
   private tools = [
     {
       functionDeclarations: [
@@ -48,7 +59,7 @@ export class GeminiService {
               },
               spaceName: {
                 type: "string",
-                description: "Nome do setor desejado (ex: Camarote 1)",
+                description: "Nome do setor desejado",
               },
             },
             required: [
@@ -63,7 +74,7 @@ export class GeminiService {
         {
           name: "cancel_reservation",
           description:
-            "Cancela uma reserva existente pelo email ou telefone do cliente.",
+            "Cancela uma reserva existente pelo telefone do cliente e data.",
           parameters: {
             type: "object",
             properties: {
@@ -89,88 +100,122 @@ export class GeminiService {
     message: string,
   ) {
     try {
-      const responseMain = await axios
-        .get(`${this.MAIN_API_URL}/nightclubs/service-ia/${nightclubId}`, {
+      const responseMain = await axios.get(
+        `${this.MAIN_API_URL}/nightclubs/service-ia/${nightclubId}`,
+        {
           headers: { "x-internal-key": this.MAIN_API_TOKEN },
-        })
-        .catch((err) => {
-          throw new Error(`Falha na Main API: ${err.message}`);
-        });
+        },
+      );
 
       const nightclub = responseMain.data;
+      if (!nightclub || !nightclub.aiAgent?.isActive) return null;
 
-      if (!nightclub || !nightclub.aiAgent?.isActive) {
-        return null;
+      // Recupera ou cria a memória do cliente
+      const sessionKey = `${nightclubId}-${customerPhone}`;
+      if (!this.memoryCache.has(sessionKey)) {
+        this.memoryCache.set(sessionKey, []);
       }
+      const userHistory = this.memoryCache.get(sessionKey)!;
 
-      const model = this.genAI.getGenerativeModel({
-        model: "gemini-flash-latest",
-        tools: this.tools as any,
-      });
-
-      const chat = model.startChat({
-        history: [
-          {
-            role: "user",
-            parts: [{ text: this.buildSystemContext(nightclub) }],
-          },
-          {
-            role: "model",
-            parts: [
-              {
-                text: "Compreendido. Operando com ferramentas de banco de dados sincronizadas.",
-              },
-            ],
-          },
-        ],
-      });
-
-      const result = await chat.sendMessage(message);
-      const chatResponse = result.response;
-      const call = chatResponse.functionCalls()?.[0];
-
-      // 🔄 ROTEAMENTO DE FUNÇÕES DA IA
-      if (call) {
-        const args: any = call.args;
-        let functionResult = "";
-
-        if (call.name === "create_reservation") {
-          console.log(`[GeminiService] IA criando reserva:`, args);
-          functionResult = await this.validateAndCreate(
-            nightclubId,
-            nightclub,
-            args,
-          );
-        } else if (call.name === "cancel_reservation") {
-          console.log(`[GeminiService] IA cancelando reserva:`, args);
-          functionResult = await this.cancelReservation(nightclubId, args);
-        }
-
-        const finalResponse = await chat.sendMessage([
-          {
-            functionResponse: {
-              name: call.name,
-              response: { content: functionResult },
+      // Monta o contexto base + memória
+      const baseHistory = [
+        { role: "user", parts: [{ text: this.buildSystemContext(nightclub) }] },
+        {
+          role: "model",
+          parts: [
+            {
+              text: "Compreendido. Estou pronto para ajudar e tenho acesso ao banco de dados.",
             },
-          },
-        ]);
+          ],
+        },
+        ...userHistory,
+      ];
 
-        return finalResponse.response.text();
+      // 🛡️ SISTEMA DE BLINDAGEM (Retry loop nos modelos)
+      for (const modelName of this.fallbackModels) {
+        try {
+          const model = this.genAI.getGenerativeModel({
+            model: modelName,
+            tools: this.tools as any,
+          });
+          const chat = model.startChat({ history: baseHistory });
+
+          const result = await chat.sendMessage(message);
+          const chatResponse = result.response;
+          const call = chatResponse.functionCalls()?.[0];
+
+          let finalResponseText = chatResponse.text();
+
+          // Se a IA decidiu usar uma ferramenta
+          if (call) {
+            const args: any = call.args;
+            let functionResult = "";
+
+            if (call.name === "create_reservation") {
+              console.log(
+                `[GeminiService - ${modelName}] IA criando reserva:`,
+                args,
+              );
+              functionResult = await this.validateAndCreate(
+                nightclubId,
+                nightclub,
+                args,
+              );
+            } else if (call.name === "cancel_reservation") {
+              console.log(
+                `[GeminiService - ${modelName}] IA cancelando reserva:`,
+                args,
+              );
+              functionResult = await this.cancelReservation(nightclubId, args);
+            }
+
+            const funcResponse = await chat.sendMessage([
+              {
+                functionResponse: {
+                  name: call.name,
+                  response: { content: functionResult },
+                },
+              },
+            ]);
+            finalResponseText = funcResponse.response.text();
+          }
+
+          // Salva na memória o que o cliente disse e o que a IA respondeu
+          userHistory.push({ role: "user", parts: [{ text: message }] });
+          userHistory.push({
+            role: "model",
+            parts: [{ text: finalResponseText }],
+          });
+
+          // Mantém a memória curta para não estourar tokens (últimas 10 mensagens)
+          if (userHistory.length > 10) userHistory.splice(0, 2);
+
+          return finalResponseText;
+        } catch (error: any) {
+          // Se for erro de cota ou sobrecarga, tenta o próximo modelo
+          if (
+            error.message.includes("429") ||
+            error.message.includes("503") ||
+            error.message.includes("404")
+          ) {
+            console.warn(
+              `⚠️ [Blindagem] Falha no modelo ${modelName}. Tentando o próximo da fila...`,
+            );
+            continue;
+          }
+          throw error; // Se for um erro bizarro, lança a exceção e sai do loop
+        }
       }
 
-      return chatResponse.text();
+      // Se o loop terminar e TODOS os modelos falharem
+      return "Nosso sistema está com uma fila de atendimento grande no momento. Poderia me mandar um 'Oi' novamente em 1 minuto?";
     } catch (error: any) {
       console.error("❌ [GeminiService Error]:", error.message);
-      if (error.message.includes("429")) {
-        return "Desculpe, nosso sistema está com alta demanda. Aguarde um instante e tente novamente.";
-      }
       return null;
     }
   }
 
-  /**
-   * 🛒 Criar Reserva e Preparar Pagamento
-   */
+  // ... [validateAndCreate e cancelReservation permanecem iguais à última versão] ...
   private async validateAndCreate(
     nightclubId: string,
     nightclub: any,
@@ -192,7 +237,6 @@ export class GeminiService {
           status: "ACTIVE",
         },
       });
-
       if (!space)
         return `Falha: Setor '${args.spaceName}' inexistente ou inativo.`;
 
@@ -203,11 +247,9 @@ export class GeminiService {
           status: { in: ["CONFIRMED", "PENDING"] },
         },
       });
-
       if (existing)
         return `Falha: O ${space.name} já está reservado nesta data.`;
 
-      // Cria ou atualiza o cliente (agora com o email obrigatório)
       const customer = await prisma.customer.upsert({
         where: { email: args.customerEmail },
         update: { phone: args.customerPhone, name: args.customerName },
@@ -218,7 +260,6 @@ export class GeminiService {
         },
       });
 
-      // Cria a reserva PENDENTE
       const reservation = await prisma.reservation.create({
         data: {
           nightclubId,
@@ -229,27 +270,19 @@ export class GeminiService {
           customerEmail: customer.email,
           date: requestedDate,
           amount: space.price,
-          status: "PENDING", // Aguardando Webhook do MP confirmar
+          status: "PENDING",
         },
       });
 
-      // TODO: Aqui vamos disparar a requisição pro Mercado Pago gerar o PIX futuramente.
-      // Por enquanto, retornamos a instrução simulada para a IA avisar o cliente.
-      return `SUCESSO! Reserva #${reservation.id.substring(0, 5)} criada. 
-      VALOR: R$ ${space.price}. 
-      INSTRUÇÃO PARA O ASSISTENTE: Diga ao cliente que a reserva está pré-aprovada e que o setor financeiro enviará o código PIX e o ingresso QR Code em instantes pelo WhatsApp.`;
+      return `SUCESSO! Reserva #${reservation.id.substring(0, 5)} criada. VALOR: R$ ${space.price}. INSTRUÇÃO PARA A IA: Diga que a reserva está pré-aprovada e que o PIX será enviado em breve.`;
     } catch (error: any) {
       return `Erro no banco: ${error.message}`;
     }
   }
 
-  /**
-   * ❌ Cancelar Reserva
-   */
   private async cancelReservation(nightclubId: string, args: any) {
     try {
       const targetDate = startOfDay(new Date(args.date));
-
       const reservation = await prisma.reservation.findFirst({
         where: {
           nightclubId,
@@ -258,43 +291,32 @@ export class GeminiService {
           status: { in: ["PENDING", "CONFIRMED"] },
         },
       });
-
-      if (!reservation)
-        return "Falha: Nenhuma reserva ativa encontrada para este telefone nesta data.";
+      if (!reservation) return "Falha: Nenhuma reserva ativa encontrada.";
 
       await prisma.reservation.update({
         where: { id: reservation.id },
         data: { status: "CANCELED" },
       });
-
-      return "Sucesso! Reserva cancelada com êxito.";
+      return "Sucesso! Reserva cancelada.";
     } catch (error: any) {
       return `Erro ao cancelar: ${error.message}`;
     }
   }
 
-  /**
-   * 🧠 Contexto do Sistema
-   */
   private buildSystemContext(nightclub: any) {
     const spaces = (nightclub.spaces || [])
       .map((s: any) => `- ${s.name}: R$ ${s.price}`)
       .join("\n");
-
     return `
       VOCÊ É O AGENTE DE ATENDIMENTO DA ${nightclub.name.toUpperCase()}.
       HOJE É: ${format(new Date(), "yyyy-MM-dd")}.
-
       SETORES DISPONÍVEIS E PREÇOS:
       ${spaces}
-
-      REGRAS ESTABELECIDAS:
-      1. Para criar reserva, VOCÊ DEVE COLETAR EXPLICITAMENTE: Nome, Telefone, EMAIL e Setor.
-      2. Se o cliente não informar o email, pergunte antes de acionar a ferramenta.
-      3. Use formatação de WhatsApp (apenas *asteriscos* para negrito).
-
-      COMPORTAMENTO BASE:
-      ${nightclub.aiAgent?.systemPrompt || "Seja eficiente e cordial."}
+      REGRAS:
+      1. Para criar reserva, COLETE: Nome, Telefone, EMAIL e Setor.
+      2. Use APENAS *asteriscos* para negrito. Sem #.
+      COMPORTAMENTO:
+      ${nightclub.aiAgent?.systemPrompt || "Seja eficiente."}
     `;
   }
 }
