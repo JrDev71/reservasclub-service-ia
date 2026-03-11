@@ -36,7 +36,31 @@ export const criarInstancia = async (instanceName: string) => {
       `[Evolution API] Erro ao criar instância ${instanceName}:`,
       error.response?.data || error.message,
     );
-    throw new Error("Falha ao criar instância no WhatsApp");
+    throw error; // 🛡️ Repassamos o erro original para o controller saber se é 409
+  }
+};
+
+// ============================================================================
+// 🔄 NOVA FUNÇÃO: RECONEXÃO / FALLBACK
+// ============================================================================
+export const conectarInstancia = async (instanceName: string) => {
+  try {
+    console.log(
+      `[DEBUG Evolution] Solicitando reconexão/QR Code para: ${instanceName}`,
+    );
+
+    // A rota GET /instance/connect devolve o status e o QR Code em Base64
+    const response = await evolutionClient.get(
+      `/instance/connect/${instanceName}`,
+    );
+
+    return response.data;
+  } catch (error: any) {
+    console.error(
+      `[Evolution API] Erro ao reconectar instância ${instanceName}:`,
+      error.response?.data || error.message,
+    );
+    throw new Error("Falha ao reconectar instância no WhatsApp");
   }
 };
 
@@ -53,7 +77,6 @@ export const configurarWebhook = async (
           url: webhookUrl,
           byEvents: false,
           base64: false,
-          // 🚀 A MÁGICA ACONTECE AQUI: Adicionamos os eventos de conexão!
           events: ["MESSAGES_UPSERT", "CONNECTION_UPDATE", "QRCODE_UPDATED"],
         },
       },
@@ -81,7 +104,7 @@ export const enviarMensagemWhatsApp = async (
       `/message/sendText/${instanceName}`,
       {
         number: number,
-        text: text, // 👈 Formato "flat" da v2 que consertamos ontem
+        text: text,
         delay: 1200,
         linkPreview: false,
       },
