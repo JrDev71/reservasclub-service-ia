@@ -3,7 +3,7 @@ import { prisma } from "../lib/prisma";
 import {
   criarInstancia,
   configurarWebhook,
-  conectarInstancia, // 👈 Nova importação que vamos precisar no service
+  conectarInstancia,
 } from "../services/evolution.service";
 
 // ============================================================================
@@ -77,13 +77,23 @@ export const createNightclubInstance = async (req: Request, res: Response) => {
     });
   } catch (error: any) {
     console.error("[Instance Controller Error]", error.message || error);
-    // 🛡️ REPASSA O ERRO 409 (Já existe) PARA O BACKEND PRINCIPAL LER
+
+    // Transforma o erro em string para buscar a mensagem oculta da Evolution
+    const errorData = error.response?.data || {};
+    const errorStr = JSON.stringify(errorData).toLowerCase();
+
+    // 🛡️ NOVO FILTRO: Agora ele pega o 403 "already in use" da Evolution
     if (
       error.response?.status === 409 ||
+      (error.response?.status === 403 && errorStr.includes("already in use")) ||
       error.message?.includes("already exists")
     ) {
+      console.log(
+        `[Instance] Instância já existe. Avisando backend principal para fazer fallback...`,
+      );
       return res.status(409).json({ error: "Instância já existe." });
     }
+
     return res
       .status(500)
       .json({ error: "Erro ao criar a instância do WhatsApp." });
