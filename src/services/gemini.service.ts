@@ -133,16 +133,18 @@ export class GeminiService {
           while (call) {
             let functionResult = "";
 
+            const args: any = call.args;
+
             if (call.name === "get_available_spaces") {
               functionResult = await this.getAvailableSpaces(
                 nightclubId,
-                call.args.date,
+                args.date,
               );
             } else if (call.name === "create_reservation") {
               functionResult = await this.createReservationAndPayment(
                 nightclubId,
                 nightclub,
-                call.args,
+                args,
               );
             }
 
