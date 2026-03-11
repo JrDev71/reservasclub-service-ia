@@ -32,7 +32,7 @@ export const handleEvolutionWebhook = async (req: Request, res: Response) => {
           .patch(
             `${process.env.MAIN_API_URL}/nightclubs/instance/status`,
             { instanceName, status },
-            { headers: { "x-internal-key": process.env.MAIN_API_TOKEN } }, // 👈 Usando a Rota VIP que criamos!
+            { headers: { "x-internal-key": process.env.MAIN_API_TOKEN } },
           )
           .catch((err) =>
             console.error("❌ Erro ao avisar Main API:", err.message),
@@ -48,7 +48,7 @@ export const handleEvolutionWebhook = async (req: Request, res: Response) => {
     }
 
     // =======================================================================
-    // 💬 ESCUTA DE MENSAGENS (O que já estava funcionando)
+    // 💬 ESCUTA DE MENSAGENS E VERIFICAÇÃO ON/OFF DO ROBÔ
     // =======================================================================
     if (eventName !== "messages.upsert") return;
 
@@ -57,7 +57,7 @@ export const handleEvolutionWebhook = async (req: Request, res: Response) => {
 
     if (!messageData || !messageId) return;
 
-    // Deduplicação
+    // Deduplicação (evita responder a mesma mensagem duas vezes)
     if (processedMessages.has(messageId)) return;
     if (messageData.key.fromMe || messageData.message?.protocolMessage) return;
 
@@ -71,15 +71,28 @@ export const handleEvolutionWebhook = async (req: Request, res: Response) => {
 
     if (!textMessage || !customerJid) return;
 
+    // 1. Busca a instância e verifica as configurações da IA no banco
     const whatsappInstance = await prisma.whatsappInstance.findUnique({
       where: { instanceName },
       include: { nightclub: { include: { aiAgent: true } } },
     });
 
-    if (!whatsappInstance || !whatsappInstance.nightclub?.aiAgent?.isActive)
-      return;
+    if (!whatsappInstance) return;
 
-    console.log(`[Webhook] IA processando: ${instanceName} | ID: ${messageId}`);
+    const aiAgent = whatsappInstance.nightclub?.aiAgent;
+
+    // 🛑 A TRAVA: Se o Agente não existir ou estiver OFF, encerra aqui silenciosamente (humano atende)
+    if (!aiAgent || aiAgent.isActive === false) {
+      console.log(
+        `[Webhook] 😴 Robô OFF para ${instanceName}. Mensagem ignorada (Atendimento Humano).`,
+      );
+      return;
+    }
+
+    // 🤖 SE PASSOU DA TRAVA, O ROBÔ ESTÁ ON!
+    console.log(
+      `[Webhook] 🤖 Robô ON! Processando: ${instanceName} | ID: ${messageId}`,
+    );
 
     const aiResponse = await geminiService.generateResponse(
       whatsappInstance.nightclubId,
