@@ -9,7 +9,6 @@ export class GeminiService {
     process.env.MAIN_API_URL || "http://localhost:3000";
   private readonly MAIN_API_TOKEN = process.env.MAIN_API_TOKEN;
 
-  // 🛡️ LISTA DE BLINDAGEM COMPLETA
   private fallbackModels = [
     "gemini-2.0-flash",
     "gemini-2.5-flash",
@@ -30,7 +29,7 @@ export class GeminiService {
         {
           name: "get_available_spaces",
           description:
-            "Consulta quais setores (camarotes, bistrôs) estão disponíveis para uma data específica.",
+            "Consulta quais setores estão disponíveis para uma data específica no banco de dados.",
           parameters: {
             type: "object",
             properties: {
@@ -45,7 +44,7 @@ export class GeminiService {
         {
           name: "create_reservation",
           description:
-            "Cria a reserva no sistema e gera o pagamento PIX para o cliente.",
+            "Cria a reserva no sistema e gera o código de pagamento PIX.",
           parameters: {
             type: "object",
             properties: {
@@ -92,14 +91,12 @@ export class GeminiService {
       const nightclub = responseMain.data;
       if (!nightclub || !nightclub.aiAgent?.isActive) return null;
 
-      // 🧠 BUSCA MEMÓRIA NO BANCO DE DADOS (Últimas 12 mensagens para contexto rico)
       const chatHistory = await prisma.aiMemory.findMany({
         where: { nightclubId, customerPhone },
         orderBy: { createdAt: "asc" },
         take: 12,
       });
 
-      // Formata para o padrão do Google SDK
       const formattedHistory = chatHistory.map((m) => ({
         role: m.role,
         parts: [{ text: m.content }],
@@ -111,7 +108,7 @@ export class GeminiService {
           role: "model",
           parts: [
             {
-              text: "Sistema Sincronizado com Memória Persistente. Estou pronto.",
+              text: "Assistente ReservasClub sincronizado. Operando com ferramentas de banco de dados.",
             },
           ],
         },
@@ -132,8 +129,7 @@ export class GeminiService {
 
           while (call) {
             let functionResult = "";
-
-            const args: any = call.args;
+            const args: any = call.args; // Cast para evitar erro TS
 
             if (call.name === "get_available_spaces") {
               functionResult = await this.getAvailableSpaces(
@@ -163,7 +159,6 @@ export class GeminiService {
 
           const responseText = chatResponse.text();
 
-          // 💾 SALVA NA MEMÓRIA (BANCO DE DADOS)
           await prisma.aiMemory.createMany({
             data: [
               { nightclubId, customerPhone, role: "user", content: message },
@@ -184,7 +179,7 @@ export class GeminiService {
           continue;
         }
       }
-      return "Estou com um problema técnico agora, mas já te retorno.";
+      return "Estou com um problema técnico, mas já te retorno.";
     } catch (e) {
       return null;
     }
@@ -203,9 +198,10 @@ export class GeminiService {
     const available = allSpaces.filter((s) => !occupiedIds.includes(s.id));
 
     if (available.length === 0)
-      return "Nenhum setor disponível para esta data.";
+      return "Nenhum setor disponível para esta data no banco de dados.";
+
     return (
-      "Setores Disponíveis para " +
+      "Setores Disponíveis em " +
       dateStr +
       ":\n" +
       available.map((s) => `- ${s.name} (R$ ${s.price})`).join("\n")
@@ -226,7 +222,7 @@ export class GeminiService {
           status: "ACTIVE",
         },
       });
-      if (!space) return "Erro: Setor não encontrado.";
+      if (!space) return "Erro: Setor não encontrado no banco.";
 
       const check = await prisma.reservation.findFirst({
         where: {
@@ -235,7 +231,7 @@ export class GeminiService {
           status: { in: ["CONFIRMED", "PENDING"] },
         },
       });
-      if (check) return "Erro: Este setor acabou de ser ocupado.";
+      if (check) return "Erro: O setor " + space.name + " já está ocupado.";
 
       const customer = await prisma.customer.upsert({
         where: { email: args.customerEmail },
@@ -246,6 +242,10 @@ export class GeminiService {
           email: args.customerEmail,
         },
       });
+
+      // 🛡️ BLINDAGEM: Já criamos com um deadline de 20 minutos (padrão do ReservasClub)
+      // Assim, se o PIX falhar, o seu Cron Job consegue cancelar a reserva!
+      const defaultDeadline = new Date(new Date().getTime() + 20 * 60000);
 
       const reservation = await prisma.reservation.create({
         data: {
@@ -258,6 +258,7 @@ export class GeminiService {
           date,
           amount: space.price,
           status: "PENDING",
+          paymentDeadline: defaultDeadline, // 👈 O fim das reservas zumbis
         },
       });
 
@@ -271,13 +272,13 @@ export class GeminiService {
           { headers: { "x-internal-key": this.MAIN_API_TOKEN } },
         );
 
-        return `SUCESSO! Reserva #${reservation.id.substring(0, 5)} criada. 
-                COPIE O PIX PARA PAGAR:
+        return `SUCESSO! Reserva #${reservation.id.substring(0, 5)} criada para ${customer.name}. 
+                CÓDIGO PIX (COPIE E COLE):
                 ${pixResponse.data.pixCode}
                 
-                O seu QR Code de entrada será enviado após o pagamento.`;
+                O seu ingresso será enviado automaticamente após o pagamento.`;
       } catch (err) {
-        return "Reserva criada, mas o PIX falhou. Enviaremos em instantes.";
+        return "Reserva registrada, mas houve um erro ao gerar o PIX. Um atendente enviará o código manualmente em instantes.";
       }
     } catch (e: any) {
       return "Erro: " + e.message;
@@ -286,12 +287,18 @@ export class GeminiService {
 
   private buildSystemContext(nightclub: any) {
     return `
-      VOCÊ É A INTELIGÊNCIA VENDAS DA ${nightclub.name.toUpperCase()}.
-      REGRAS:
-      1. Use 'get_available_spaces' antes de confirmar datas.
-      2. Peça SEMPRE: Nome, Telefone e E-mail.
-      3. Entregue o código PIX retornado pela ferramenta.
-      4. Personalidade: ${nightclub.aiAgent?.systemPrompt || "Cordial."}
+      VOCÊ É O GERENTE DE VENDAS DA ${nightclub.name.toUpperCase()}.
+      HOJE É: ${format(new Date(), "yyyy-MM-dd")}.
+
+      REGRAS DE OURO:
+      1. Use 'get_available_spaces' ANTES de oferecer qualquer setor.
+      2. NUNCA diga que enviou algo por e-mail.
+      3. Quando a ferramenta 'create_reservation' retornar o código PIX, EXIBA-O INTEGRALMENTE para o cliente copiar.
+      4. Se o PIX for gerado, informe que o QR Code do ingresso será enviado por aqui mesmo após o pagamento.
+      5. Formatação: Use *asteriscos* para negrito. Sem títulos #.
+
+      CONTEXTO DA BALADA:
+      ${nightclub.aiAgent?.systemPrompt || "Seja focado em converter a venda."}
     `;
   }
 }
