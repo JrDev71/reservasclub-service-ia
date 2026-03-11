@@ -1,7 +1,7 @@
 import { GoogleGenerativeAI } from "@google/generative-ai";
 import axios from "axios";
 import { prisma } from "../lib/prisma";
-import { addDays, isAfter, isBefore, startOfDay, format } from "date-fns";
+import { startOfDay, format } from "date-fns";
 
 export class GeminiService {
   private genAI: GoogleGenerativeAI;
@@ -9,12 +9,12 @@ export class GeminiService {
     process.env.MAIN_API_URL || "http://localhost:3000";
   private readonly MAIN_API_TOKEN = process.env.MAIN_API_TOKEN;
 
+  // 🛡️ LISTA DE BLINDAGEM LIMPA (Apenas modelos ativos e de alta performance)
   private fallbackModels = [
     "gemini-2.0-flash",
     "gemini-2.5-flash",
     "gemini-2.0-flash-lite",
     "gemini-flash-latest",
-    "gemini-1.5-flash",
     "gemini-pro-latest",
   ];
 
@@ -70,7 +70,6 @@ export class GeminiService {
     );
 
     try {
-      // 1. Busca contexto da balada
       const responseMain = await axios.get(
         `${this.MAIN_API_URL}/nightclubs/service-ia/${nightclubId}`,
         {
@@ -85,7 +84,6 @@ export class GeminiService {
         return null;
       }
 
-      // 2. Carrega Histórico
       const chatHistory = await prisma.aiMemory.findMany({
         where: { nightclubId, customerPhone },
         orderBy: { createdAt: "asc" },
@@ -94,14 +92,15 @@ export class GeminiService {
 
       const baseHistory = [
         { role: "user", parts: [{ text: this.buildSystemContext(nightclub) }] },
-        { role: "model", parts: [{ text: "OK." }] },
+        { role: "model", parts: [{ text: "OK. Operando." }] },
         ...chatHistory.map((m) => ({
           role: m.role,
           parts: [{ text: m.content }],
         })),
       ];
 
-      // 3. Execução com Fallback e Logs Detalhados
+      let lastErrorType = "";
+
       for (const modelName of this.fallbackModels) {
         try {
           console.log(`[${requestId}] 🧠 Tentando modelo: ${modelName}`);
@@ -116,9 +115,7 @@ export class GeminiService {
           let call = chatResponse.functionCalls()?.[0];
 
           while (call) {
-            console.log(
-              `[${requestId}] 🛠️ IA disparou ferramenta: ${call.name}`,
-            );
+            console.log(`[${requestId}] 🛠️ IA usou: ${call.name}`);
             const args: any = call.args;
             let functionResult = "";
 
@@ -152,7 +149,6 @@ export class GeminiService {
 
           const responseText = chatResponse.text();
 
-          // 4. Persistência
           await prisma.aiMemory.createMany({
             data: [
               { nightclubId, customerPhone, role: "user", content: message },
@@ -165,18 +161,30 @@ export class GeminiService {
             ],
           });
 
-          console.log(`[${requestId}] ✅ SUCESSO: Resposta enviada.`);
+          console.log(`[${requestId}] ✅ SUCESSO (${modelName})`);
           return responseText;
         } catch (error: any) {
-          console.error(
-            `[${requestId}] ❌ FALHA no ${modelName}: ${error.message}`,
+          // 🧹 Limpa o log para não poluir o terminal, mostrando só o essencial
+          const isQuota =
+            error.message.includes("429") || error.message.includes("Quota");
+          if (isQuota) lastErrorType = "QUOTA_EXCEEDED";
+
+          console.warn(
+            `[${requestId}] ⚠️ Falha no ${modelName}: ${isQuota ? "Cota estourada (429)" : error.message.split("\n")[0]}`,
           );
           continue;
         }
       }
-      return "Estou processando muitas mensagens, me chame em um minuto!";
+
+      // Se todos os modelos falharem, avisa de forma elegante
+      if (lastErrorType === "QUOTA_EXCEEDED") {
+        console.error(
+          `[${requestId}] 🚨 ALERTA CRÍTICO: Todas as tentativas falharam por falta de cota no Google API. Cadastre o billing!`,
+        );
+      }
+      return "Estou com uma fila de espera grande no momento. Pode me enviar um 'Oi' novamente em 1 minuto?";
     } catch (e: any) {
-      console.error(`[${requestId}] 🚨 ERRO CRÍTICO: ${e.message}`);
+      console.error(`[${requestId}] 🚨 ERRO SISTÊMICO: ${e.message}`);
       return null;
     }
   }
@@ -186,9 +194,6 @@ export class GeminiService {
     dateStr: string,
     requestId: string,
   ) {
-    console.log(
-      `[${requestId}] 🔍 Consultando disponibilidade para ${dateStr}`,
-    );
     const date = startOfDay(new Date(dateStr));
     const allSpaces = await prisma.space.findMany({
       where: { nightclubId, status: "ACTIVE" },
@@ -199,10 +204,6 @@ export class GeminiService {
     });
     const occupiedIds = occupiedReservations.map((r) => r.spaceId);
     const available = allSpaces.filter((s) => !occupiedIds.includes(s.id));
-
-    console.log(
-      `[${requestId}] 📊 Resultado: ${available.length} espaços livres.`,
-    );
 
     if (available.length === 0) return "Nenhum setor disponível.";
     return (
@@ -217,9 +218,7 @@ export class GeminiService {
     args: any,
     requestId: string,
   ) {
-    console.log(
-      `[${requestId}] 📝 Criando reserva no banco para ${args.customerName}`,
-    );
+    console.log(`[${requestId}] 📝 Criando reserva para ${args.customerName}`);
     try {
       const date = startOfDay(new Date(args.date));
       const space = await prisma.space.findFirst({
@@ -257,10 +256,6 @@ export class GeminiService {
         },
       });
 
-      console.log(
-        `[${requestId}] 💰 Solicitando PIX para Reserva ${reservation.id.substring(0, 5)}`,
-      );
-
       const pixResponse = await axios.post(
         `${this.MAIN_API_URL}/payments/generate-pix`,
         {
@@ -270,10 +265,10 @@ export class GeminiService {
         { headers: { "x-internal-key": this.MAIN_API_TOKEN } },
       );
 
-      return `CRIADA! ID: ${reservation.id.substring(0, 5)}. PIX: ${pixResponse.data.pixCode}`;
+      return `CRIADA! PIX: ${pixResponse.data.pixCode}`;
     } catch (e: any) {
       console.error(`[${requestId}] 💥 Erro na criação: ${e.message}`);
-      return "Erro no processo.";
+      return "Erro no processo de PIX.";
     }
   }
 
