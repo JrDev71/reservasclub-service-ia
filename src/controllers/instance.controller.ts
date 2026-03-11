@@ -21,7 +21,7 @@ export const createNightclubInstance = async (req: Request, res: Response) => {
 
     // 1. Busca a balada para pegar o slug (seu identificador humano)
     const nightclub = await prisma.nightclub.findUnique({
-      where: { id: nightclubId },
+      where: { id: nightclubId as string },
     });
 
     if (!nightclub) {
@@ -104,7 +104,7 @@ export const connectNightclubInstance = async (req: Request, res: Response) => {
     }
 
     const nightclub = await prisma.nightclub.findUnique({
-      where: { id: nightclubId },
+      where: { id: nightclubId as string },
     });
 
     if (!nightclub) {
