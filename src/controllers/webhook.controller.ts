@@ -108,10 +108,6 @@ export const handleEvolutionWebhook = async (req: Request, res: Response) => {
             where: { instanceName },
             data: { qrCode: base64, status: "QRCODE" },
           });
-        } else {
-          console.log(
-            `[Sentinela] 👻 QR Code fantasma ignorado. A instância já está CONNECTED.`,
-          );
         }
       }
       return;
@@ -146,6 +142,29 @@ export const handleEvolutionWebhook = async (req: Request, res: Response) => {
     });
 
     if (!whatsappInstance) return;
+
+    // =======================================================================
+    // 🩹 AUTO-CURA DO BANCO DE DADOS
+    // Se recebemos mensagem, estamos conectados. Vamos garantir que o painel saiba!
+    // =======================================================================
+    if (whatsappInstance.status !== "CONNECTED") {
+      console.log(
+        `[Sentinela] 🩹 Auto-cura ativada: Mensagem recebida, forçando status do banco para CONNECTED.`,
+      );
+
+      await prisma.whatsappInstance.update({
+        where: { instanceName },
+        data: { status: "CONNECTED", qrCode: null },
+      });
+
+      await axios
+        .patch(
+          `${process.env.MAIN_API_URL}/nightclubs/instance/status`,
+          { instanceName, status: "CONNECTED" },
+          { headers: { "x-internal-key": process.env.MAIN_API_TOKEN } },
+        )
+        .catch(() => {});
+    }
 
     const aiAgent = whatsappInstance.nightclub?.aiAgent;
 
