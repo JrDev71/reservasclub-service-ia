@@ -133,8 +133,6 @@ export class GeminiService {
           let call = chatResponse.functionCalls()?.[0];
           let finalResponseText = chatResponse.text() || "";
 
-          // Loop de funções corrigido: Se ele chama uma função, nós DEVOLVEMOS o resultado
-          // e OBRIGAMOS a IA a gerar uma resposta em texto.
           while (call) {
             console.log(`[${requestId}] 🛠️ IA usou: ${call.name}`);
             const args: any = call.args;
@@ -152,11 +150,10 @@ export class GeminiService {
                 nightclub,
                 args,
                 requestId,
-                customerPhone, // <-- Passando o número para disparar a imagem
+                customerPhone, // <-- Passando o JID para disparo de mídia
               );
             }
 
-            // Manda o resultado da função de volta pra IA
             const nextStep = await chat.sendMessage([
               {
                 functionResponse: {
@@ -169,7 +166,6 @@ export class GeminiService {
             chatResponse = nextStep.response;
             call = chatResponse.functionCalls()?.[0];
 
-            // Se ela não chamou outra função, pegamos o texto final que ela gerou
             if (!call) {
               finalResponseText = chatResponse.text();
             }
@@ -299,24 +295,29 @@ export class GeminiService {
 
       const pixCode = pixResponse.data.pixCode;
       const base64Image = pixResponse.data.qrCodeBase64;
-      const checkoutLink = `https://reservasclub.com/checkout/${reservation.id}`;
+
+      // 🔗 LINK CORRIGIDO COM O .BR
+      const checkoutLink = `https://reservasclub.com.br/checkout/${reservation.id}`;
 
       // 📸 Dispara a imagem do QR Code direto no WhatsApp
-      if (base64Image) {
+      // Garantimos que a imagem existe e tem tamanho pra ser um base64 real
+      if (base64Image && base64Image.length > 50) {
         try {
-          // Busca o nome da instância ativa
           const instance = await prisma.whatsappInstance.findFirst({
             where: { nightclubId, status: { in: ["CONNECTED", "OPEN"] } },
             orderBy: { createdAt: "desc" },
           });
 
           if (instance) {
+            // 🛡️ Limpeza do número: Remove o @s.whatsapp.net para a Evolution não cuspir Erro 400
+            const safeNumber = customerPhone.replace("@s.whatsapp.net", "");
+
             console.log(
-              `[${requestId}] 📸 Disparando Imagem do QR Code PIX para ${customerPhone}`,
+              `[${requestId}] 📸 Disparando Imagem do QR Code PIX para ${safeNumber}`,
             );
             await enviarMediaWhatsApp(
               instance.instanceName,
-              customerPhone,
+              safeNumber,
               base64Image,
               "Seu QR Code para pagamento",
             );
@@ -329,7 +330,6 @@ export class GeminiService {
         }
       }
 
-      // Retorna para a IA o texto que ela deve falar
       return `RESERVA CRIADA COM SUCESSO!
       
 1. Código PIX Copia e Cola: ${pixCode}
