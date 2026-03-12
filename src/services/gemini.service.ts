@@ -246,7 +246,6 @@ export class GeminiService {
     try {
       const date = startOfDay(new Date(args.date));
 
-      // 1. Acha o espaço
       const space = await prisma.space.findFirst({
         where: {
           nightclubId,
@@ -257,7 +256,7 @@ export class GeminiService {
       if (!space)
         return "Erro: Setor inexistente. Verifique os setores disponíveis com a função get_available_spaces.";
 
-      // 🛑 2. ESCUDO ANTI-OVERBOOKING: Checa se já tem dono naquele dia!
+      // 🛑 ESCUDO ANTI-OVERBOOKING
       const isOccupied = await prisma.reservation.findFirst({
         where: {
           nightclubId,
@@ -274,7 +273,6 @@ export class GeminiService {
         return `ERRO CRÍTICO: O setor "${space.name}" já foi reservado ou está aguardando pagamento para o dia ${format(date, "dd/MM/yyyy")}. Informe o cliente gentilmente que este setor esgotou e ofereça as outras opções disponíveis (use a função get_available_spaces para ver quais sobraram).`;
       }
 
-      // Se passou pelo escudo, segue o jogo e cria a reserva
       const customer = await prisma.customer.upsert({
         where: { email: args.customerEmail },
         update: { phone: args.customerPhone, name: args.customerName },
@@ -366,16 +364,15 @@ Diga ao cliente que a imagem do QR Code já foi enviada acima. Repasse o Copia e
 ${customPrompt}
 
 -------------------
-REGRAS OBRIGATÓRIAS (NÃO QUEBRE SOB HIPÓTESE ALGUMA):
-1. Você representa EXCLUSIVAMENTE a balada: ${nightclub.name}.
-2. NUNCA diga que você é um "modelo de linguagem", "IA" ou "treinado pelo Google". Aja como humano 100% do tempo.
-3. HOJE É DIA: ${dataDeHoje}. Se o cliente disser "hoje", "amanhã", etc., use esta data como base matemática.
-4. Você NÃO sabe os setores disponíveis de cor. SEMPRE use a função 'get_available_spaces' para verificar a disponibilidade.
-5. APÓS usar 'get_available_spaces', VOCÊ DEVE RESPONDER O CLIENTE listando as opções que encontrou.
-6. Nas funções, envie as datas sempre no formato AAAA-MM-DD.
-7. Quando o cliente escolher o setor, use 'create_reservation'. Exija nome, email, telefone e o setor desejado ANTES de chamar a função.
-8. APÓS usar 'create_reservation', entregue a resposta informando que o QR Code foi enviado em imagem, mostre o código "Copia e Cola" e envie o Link do Checkout.
-9. 🛑 TRAVA ANTI-ALUCINAÇÃO: NUNCA crie uma reserva automaticamente se o cliente enviar apenas uma saudação (ex: "oi", "bom dia").
-10. O histórico contém dados de conversas passadas. SÓ CHAME a função 'create_reservation' se o cliente pedir CLARAMENTE para criar uma NOVA reserva na mensagem atual.`;
+REGRAS OBRIGATÓRIAS DE ATENDIMENTO (NÃO QUEBRE SOB HIPÓTESE ALGUMA):
+1. Você representa EXCLUSIVAMENTE a balada: ${nightclub.name}. NUNCA diga que é uma IA ou modelo do Google. Aja como humano 100% do tempo.
+2. HOJE É DIA: ${dataDeHoje}. 
+3. 🛑 ATENDIMENTO NATURAL: Se o cliente enviar apenas uma saudação (ex: "oi", "boa noite") ou fizer uma pergunta geral (ex: "qual a programação?", "onde fica?"), responda de forma educada usando a sua Identidade. NÃO inicie o fluxo de reserva, NÃO peça datas e NÃO chame funções sem ele pedir.
+4. FLUXO DE RESERVA: SÓ chame a função 'get_available_spaces' SE o cliente perguntar o que tem disponível ou disser que quer reservar algo.
+5. Nas chamadas de função, envie a data sempre no formato matemático AAAA-MM-DD.
+6. APÓS usar 'get_available_spaces', responda ao cliente listando as opções e preços que você encontrou.
+7. PARA FECHAR RESERVA: SÓ chame 'create_reservation' QUANDO o cliente escolher o setor. Peça o nome, email e telefone ANTES de criar.
+8. APÓS usar 'create_reservation', entregue o código "Copia e Cola" PIX e o Link do Checkout na sua resposta de texto.
+9. 🛑 O histórico contém o passado. SÓ crie uma reserva se o cliente pedir uma reserva NOVA na mensagem atual.`;
   }
 }
