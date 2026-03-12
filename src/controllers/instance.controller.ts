@@ -4,7 +4,46 @@ import {
   criarInstancia,
   configurarWebhook,
   conectarInstancia,
+  abortarConexaoInstancia, // 👈 Nova importação
 } from "../services/evolution.service";
+
+// ============================================================================
+// 🕰️ FUNÇÃO AUXILIAR: A GUILHOTINA DE 15 SEGUNDOS
+// ============================================================================
+const iniciarCronometroCancelamento = (instanceName: string) => {
+  setTimeout(async () => {
+    try {
+      // 1. Verifica se a instância ainda está presa na tela de QR Code
+      const instancia = await prisma.whatsappInstance.findUnique({
+        where: { instanceName },
+      });
+
+      if (instancia && instancia.status === "QRCODE") {
+        console.log(
+          `[Timer] ⏰ 15 segundos passaram. QR Code não foi lido para ${instanceName}. Abortando...`,
+        );
+
+        // 2. Manda a Evolution parar de gerar QR Codes
+        await abortarConexaoInstancia(instanceName);
+
+        // 3. Limpa o banco para o botão voltar no painel do cliente
+        await prisma.whatsappInstance.update({
+          where: { instanceName },
+          data: { status: "DISCONNECTED", qrCode: null },
+        });
+
+        console.log(
+          `[Timer] 🛑 Instância ${instanceName} resetada para DISCONNECTED.`,
+        );
+      }
+    } catch (error: any) {
+      console.error(
+        `[Timer Error] Falha ao abortar conexão de ${instanceName}:`,
+        error.message,
+      );
+    }
+  }, 15000); // 15.000 ms = 15 segundos
+};
 
 // ============================================================================
 // 1. CRIAÇÃO DE NOVA INSTÂNCIA (A primeira vez)
@@ -64,6 +103,9 @@ export const createNightclubInstance = async (req: Request, res: Response) => {
         nightclubId: nightclub.id,
       },
     });
+
+    // ⏳ ACIONA A GUILHOTINA!
+    iniciarCronometroCancelamento(instanceName);
 
     return res.status(200).json({
       success: true,
@@ -141,6 +183,9 @@ export const connectNightclubInstance = async (req: Request, res: Response) => {
         qrCode: qrCodeBase64,
       },
     });
+
+    // ⏳ ACIONA A GUILHOTINA AQUI TAMBÉM!
+    iniciarCronometroCancelamento(instanceName);
 
     return res.status(200).json({
       success: true,

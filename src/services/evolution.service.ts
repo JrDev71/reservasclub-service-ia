@@ -64,6 +64,23 @@ export const conectarInstancia = async (instanceName: string) => {
   }
 };
 
+// ============================================================================
+// 🛑 NOVA FUNÇÃO: A GUILHOTINA (Manda a Evolution parar de gerar QR Code)
+// ============================================================================
+export const abortarConexaoInstancia = async (instanceName: string) => {
+  try {
+    console.log(
+      `[Evolution API] 🛑 Cortando conexão pendente (Logout) para: ${instanceName}`,
+    );
+    await evolutionClient.delete(`/instance/logout/${instanceName}`);
+  } catch (error: any) {
+    // Ignoramos erro de 404/400 aqui, pois se a instância já caiu, o objetivo já foi atingido
+    console.log(
+      `[Evolution API] Logout processado/ignorado para ${instanceName}.`,
+    );
+  }
+};
+
 export const configurarWebhook = async (
   instanceName: string,
   webhookUrl: string,
