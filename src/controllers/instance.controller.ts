@@ -20,7 +20,7 @@ const iniciarCronometroCancelamento = (instanceName: string) => {
 
       if (instancia && instancia.status === "QRCODE") {
         console.log(
-          `[Timer] ⏰ 15 segundos passaram. QR Code não foi lido para ${instanceName}. Abortando...`,
+          `[Timer] ⏰ 45 segundos passaram. QR Code não foi lido para ${instanceName}. Abortando...`,
         );
 
         // 2. Manda a Evolution parar de gerar QR Codes
@@ -42,7 +42,7 @@ const iniciarCronometroCancelamento = (instanceName: string) => {
         error.message,
       );
     }
-  }, 15000); // 15.000 ms = 15 segundos
+  }, 45000); // 45.000 ms = 45 segundos
 };
 
 // ============================================================================
