@@ -30,7 +30,7 @@ export const handleEvolutionWebhook = async (req: Request, res: Response) => {
 
         let statusFinal = status;
 
-        // 🛑 TRAVA: Se falhou, expirou ou desconectou, matamos o QR Code no banco
+        // 🛑 TRAVA: Se falhou, expirou ou desconectou
         if (status === "refused" || status === "close") {
           statusFinal = "DISCONNECTED";
           console.log(
@@ -40,6 +40,18 @@ export const handleEvolutionWebhook = async (req: Request, res: Response) => {
           await prisma.whatsappInstance.update({
             where: { instanceName },
             data: { status: "DISCONNECTED", qrCode: null },
+          });
+        }
+        // ✅ SALVAÇÃO: Se conectou, desarma a guilhotina!
+        else if (status === "open") {
+          statusFinal = "CONNECTED";
+          console.log(
+            `[Sentinela] 🟢 Conexão de sucesso! Atualizando banco para desarmar a guilhotina...`,
+          );
+
+          await prisma.whatsappInstance.update({
+            where: { instanceName },
+            data: { status: "CONNECTED", qrCode: null },
           });
         }
 
@@ -64,13 +76,20 @@ export const handleEvolutionWebhook = async (req: Request, res: Response) => {
       const base64 = body.data?.qrcode?.base64 || body.data?.base64;
 
       if (base64) {
-        console.log(
-          `[Sentinela] Renovando QR Code no banco para: ${instanceName}`,
-        );
-        await prisma.whatsappInstance.update({
+        // Verifica se já não conectou antes de ficar salvando QR Code atrasado
+        const checkInstance = await prisma.whatsappInstance.findUnique({
           where: { instanceName },
-          data: { qrCode: base64, status: "QRCODE" },
         });
+
+        if (checkInstance && checkInstance.status !== "CONNECTED") {
+          console.log(
+            `[Sentinela] Renovando QR Code no banco para: ${instanceName}`,
+          );
+          await prisma.whatsappInstance.update({
+            where: { instanceName },
+            data: { qrCode: base64, status: "QRCODE" },
+          });
+        }
       }
       return;
     }
@@ -85,7 +104,6 @@ export const handleEvolutionWebhook = async (req: Request, res: Response) => {
 
     if (!messageData || !messageId) return;
 
-    // Deduplicação (evita responder a mesma mensagem duas vezes)
     if (processedMessages.has(messageId)) return;
     if (messageData.key.fromMe || messageData.message?.protocolMessage) return;
 
@@ -99,7 +117,6 @@ export const handleEvolutionWebhook = async (req: Request, res: Response) => {
 
     if (!textMessage || !customerJid) return;
 
-    // 1. Busca a instância e verifica as configurações da IA no banco
     const whatsappInstance = await prisma.whatsappInstance.findUnique({
       where: { instanceName },
       include: { nightclub: { include: { aiAgent: true } } },
@@ -109,7 +126,6 @@ export const handleEvolutionWebhook = async (req: Request, res: Response) => {
 
     const aiAgent = whatsappInstance.nightclub?.aiAgent;
 
-    // 🛑 A TRAVA: Se o Agente não existir ou estiver OFF, encerra aqui silenciosamente (humano atende)
     if (!aiAgent || aiAgent.isActive === false) {
       console.log(
         `[Webhook] 😴 Robô OFF para ${instanceName}. Mensagem ignorada (Atendimento Humano).`,
@@ -117,7 +133,6 @@ export const handleEvolutionWebhook = async (req: Request, res: Response) => {
       return;
     }
 
-    // 🤖 SE PASSOU DA TRAVA, O ROBÔ ESTÁ ON!
     console.log(
       `[Webhook] 🤖 Robô ON! Processando: ${instanceName} | ID: ${messageId}`,
     );
