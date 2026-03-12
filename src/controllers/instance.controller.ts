@@ -4,29 +4,30 @@ import {
   criarInstancia,
   configurarWebhook,
   conectarInstancia,
-  abortarConexaoInstancia, // 👈 Nova importação
+  abortarConexaoInstancia,
 } from "../services/evolution.service";
 
 // ============================================================================
-// 🕰️ FUNÇÃO AUXILIAR: A GUILHOTINA DE 15 SEGUNDOS
+// 🕰️ FUNÇÃO AUXILIAR: A GUILHOTINA DE 45 SEGUNDOS
 // ============================================================================
 const iniciarCronometroCancelamento = (instanceName: string) => {
   setTimeout(async () => {
     try {
-      // 1. Verifica se a instância ainda está presa na tela de QR Code
       const instancia = await prisma.whatsappInstance.findUnique({
         where: { instanceName },
       });
 
-      if (instancia && instancia.status === "QRCODE") {
+      // Se passou 45s e AINDA está travado no QR Code ou Connecting
+      if (
+        instancia &&
+        (instancia.status === "QRCODE" || instancia.status === "CONNECTING")
+      ) {
         console.log(
           `[Timer] ⏰ 45 segundos passaram. QR Code não foi lido para ${instanceName}. Abortando...`,
         );
 
-        // 2. Manda a Evolution parar de gerar QR Codes
         await abortarConexaoInstancia(instanceName);
 
-        // 3. Limpa o banco para o botão voltar no painel do cliente
         await prisma.whatsappInstance.update({
           where: { instanceName },
           data: { status: "DISCONNECTED", qrCode: null },
@@ -42,7 +43,7 @@ const iniciarCronometroCancelamento = (instanceName: string) => {
         error.message,
       );
     }
-  }, 45000); // 45.000 ms = 45 segundos
+  }, 45000);
 };
 
 // ============================================================================
@@ -52,43 +53,28 @@ export const createNightclubInstance = async (req: Request, res: Response) => {
   try {
     const { nightclubId } = req.body;
 
-    if (!nightclubId) {
-      return res
-        .status(400)
-        .json({ error: "O ID da balada (nightclubId) é obrigatório no body." });
-    }
+    if (!nightclubId) return res.status(400).json({ error: "ID obrigatório." });
 
-    // 1. Busca a balada para pegar o slug (seu identificador humano)
     const nightclub = await prisma.nightclub.findUnique({
       where: { id: nightclubId as string },
     });
 
-    if (!nightclub) {
+    if (!nightclub)
       return res.status(404).json({ error: "Balada não encontrada." });
-    }
 
-    // 2. Define o nome da instância usando o seu padrão de slug
     const instanceName = `balada_${nightclub.slug}`;
-
     console.log(
       `[Instance] Iniciando criação na Evolution API: ${instanceName}`,
     );
 
-    // 3. Solicita a criação na Evolution API
     const evolutionResponse = await criarInstancia(instanceName);
-
-    // Extrai o QR Code em Base64 (conforme a estrutura da Evolution)
     const qrCodeBase64 = evolutionResponse?.qrcode?.base64 || "";
 
-    // 4. Configura o Webhook
-    // Se o ngrok estiver rodando, use a URL dele no .env (WEBHOOK_URL)
     const webhookUrl =
       process.env.WEBHOOK_URL ||
       "http://host.docker.internal:3001/evolution/webhook";
-
     await configurarWebhook(instanceName, webhookUrl);
 
-    // 5. Sincroniza com o banco de dados (Upsert para evitar duplicidade)
     const whatsappInstance = await prisma.whatsappInstance.upsert({
       where: { instanceName },
       update: {
@@ -104,27 +90,18 @@ export const createNightclubInstance = async (req: Request, res: Response) => {
       },
     });
 
-    // ⏳ ACIONA A GUILHOTINA!
     iniciarCronometroCancelamento(instanceName);
 
     return res.status(200).json({
       success: true,
-      message: "Instância pronta. Aguardando leitura do QR Code.",
-      instance: {
-        id: whatsappInstance.id,
-        instanceName: whatsappInstance.instanceName,
-        status: whatsappInstance.status,
-        qrCode: whatsappInstance.qrCode,
-      },
+      instance: whatsappInstance,
     });
   } catch (error: any) {
     console.error("[Instance Controller Error]", error.message || error);
 
-    // Transforma o erro em string para buscar a mensagem oculta da Evolution
     const errorData = error.response?.data || {};
     const errorStr = JSON.stringify(errorData).toLowerCase();
 
-    // 🛡️ NOVO FILTRO: Agora ele pega o 403 "already in use" da Evolution
     if (
       error.response?.status === 409 ||
       (error.response?.status === 403 && errorStr.includes("already in use")) ||
@@ -136,66 +113,59 @@ export const createNightclubInstance = async (req: Request, res: Response) => {
       return res.status(409).json({ error: "Instância já existe." });
     }
 
-    return res
-      .status(500)
-      .json({ error: "Erro ao criar a instância do WhatsApp." });
+    return res.status(500).json({ error: "Erro ao criar a instância." });
   }
 };
 
 // ============================================================================
-// 2. RECONEXÃO / FALLBACK (Quando a instância já existe)
+// 2. RECONEXÃO / FALLBACK (Onde matamos o fantasma do Webhook)
 // ============================================================================
 export const connectNightclubInstance = async (req: Request, res: Response) => {
   try {
     const { nightclubId } = req.params;
 
-    if (!nightclubId) {
-      return res
-        .status(400)
-        .json({ error: "O ID da balada é obrigatório na URL." });
-    }
+    if (!nightclubId)
+      return res.status(400).json({ error: "ID obrigatório na URL." });
 
     const nightclub = await prisma.nightclub.findUnique({
       where: { id: nightclubId as string },
     });
 
-    if (!nightclub) {
+    if (!nightclub)
       return res.status(404).json({ error: "Balada não encontrada." });
-    }
 
     const instanceName = `balada_${nightclub.slug}`;
     console.log(
-      `[Instance] 🔄 Solicitando reconexão/QR Code na Evolution: ${instanceName}`,
+      `[Instance] 🔄 Solicitando reconexão na Evolution: ${instanceName}`,
     );
 
-    // Solicita a conexão apenas para resgatar o QR Code
+    // 👻 EXORCISMO DO WEBHOOK: Atualizamos a URL da Evolution antes de pedir o QR Code
+    const webhookUrl =
+      process.env.WEBHOOK_URL ||
+      "http://host.docker.internal:3001/evolution/webhook";
+    await configurarWebhook(instanceName, webhookUrl);
+
+    // Agora sim pedimos a conexão
     const evolutionResponse = await conectarInstancia(instanceName);
 
-    // Na rota de connect da Evolution, a estrutura do Base64 muda um pouco às vezes
+    // Às vezes a Evolution não devolve na hora. Se vier vazio, o Webhook vai salvar depois.
     const qrCodeBase64 =
-      evolutionResponse?.base64 || evolutionResponse?.qrcode?.base64 || "";
+      evolutionResponse?.base64 || evolutionResponse?.qrcode?.base64 || null;
 
-    // Atualiza o banco de dados com o novo QR Code
     const whatsappInstance = await prisma.whatsappInstance.update({
       where: { instanceName },
       data: {
-        status: "QRCODE",
+        // Se vier vazio, fica CONNECTING (girando bolinha) até o Webhook receber a imagem
+        status: qrCodeBase64 ? "QRCODE" : "CONNECTING",
         qrCode: qrCodeBase64,
       },
     });
 
-    // ⏳ ACIONA A GUILHOTINA AQUI TAMBÉM!
     iniciarCronometroCancelamento(instanceName);
 
     return res.status(200).json({
       success: true,
-      message: "Novo QR Code gerado com sucesso.",
-      instance: {
-        id: whatsappInstance.id,
-        instanceName: whatsappInstance.instanceName,
-        status: whatsappInstance.status,
-        qrCode: whatsappInstance.qrCode,
-      },
+      instance: whatsappInstance,
     });
   } catch (error: any) {
     console.error("[Instance Connect Error]", error.message || error);
