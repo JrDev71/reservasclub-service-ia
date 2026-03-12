@@ -1,12 +1,41 @@
 import { Request, Response } from "express";
 import { prisma } from "../lib/prisma";
+import axios from "axios";
 import {
   criarInstancia,
   configurarWebhook,
   conectarInstancia,
   abortarConexaoInstancia,
-  conectarInstanciaComCodigo, // 🔢 Importação nova aqui!
+  conectarInstanciaComCodigo,
 } from "../services/evolution.service";
+
+// ============================================================================
+// 🪓 FUNÇÃO AUXILIAR: A VOADORA DE LOGOUT (MATA A SESSÃO ZUMBI)
+// ============================================================================
+const forcarDesconexao = async (instanceName: string) => {
+  try {
+    const EVOLUTION_API_URL =
+      process.env.EVOLUTION_API_URL || "http://localhost:8080";
+    const EVOLUTION_API_KEY = process.env.EVOLUTION_API_KEY || "";
+
+    console.log(
+      `\n[Instance] 🪓 Forçando Logout na Evolution para: ${instanceName}`,
+    );
+    await axios.delete(`${EVOLUTION_API_URL}/instance/logout/${instanceName}`, {
+      headers: { apikey: EVOLUTION_API_KEY },
+      timeout: 5000,
+    });
+
+    console.log(
+      `[Instance] ⏳ Aguardando 3 segundos pro Baileys dropar a conexão...`,
+    );
+    await new Promise((resolve) => setTimeout(resolve, 3000));
+  } catch (error: any) {
+    console.log(
+      `[Instance] ⚠️ Logout ignorado pela API (a instância já deve estar morta). Seguindo...`,
+    );
+  }
+};
 
 // ============================================================================
 // 🕰️ FUNÇÃO AUXILIAR: A GUILHOTINA DE 45 SEGUNDOS
@@ -18,13 +47,12 @@ const iniciarCronometroCancelamento = (instanceName: string) => {
         where: { instanceName },
       });
 
-      // Se passou 45s e AINDA está travado no QR Code ou Connecting
       if (
         instancia &&
         (instancia.status === "QRCODE" || instancia.status === "CONNECTING")
       ) {
         console.log(
-          `[Timer] ⏰ 45 segundos passaram. Conexão pendente não foi concluída para ${instanceName}. Abortando...`,
+          `[Timer] ⏰ 45 segundos passaram. Conexão não concluída para ${instanceName}. Abortando...`,
         );
 
         await abortarConexaoInstancia(instanceName);
@@ -44,7 +72,7 @@ const iniciarCronometroCancelamento = (instanceName: string) => {
         error.message,
       );
     }
-  }, 45000); // 45 segundos de tolerância
+  }, 45000);
 };
 
 // ============================================================================
@@ -137,8 +165,11 @@ export const connectNightclubInstance = async (req: Request, res: Response) => {
 
     const instanceName = `balada_${nightclub.slug}`;
     console.log(
-      `[Instance] 🔄 Solicitando reconexão na Evolution: ${instanceName}`,
+      `\n[Instance] 🔄 Inciando Fluxo de QR Code para: ${instanceName}`,
     );
+
+    // 🪓 Força o logout e limpa o cache da Evolution ANTES de pedir conexão
+    await forcarDesconexao(instanceName);
 
     const webhookUrl =
       process.env.WEBHOOK_URL ||
@@ -173,7 +204,9 @@ export const connectNightclubInstance = async (req: Request, res: Response) => {
     });
   } catch (error: any) {
     console.error("[Instance Connect Error]", error.message || error);
-    return res.status(500).json({ error: "Erro ao reconectar a instância." });
+    return res
+      .status(500)
+      .json({ error: "Erro ao reconectar a instância. Tente novamente." });
   }
 };
 
@@ -201,10 +234,8 @@ export const connectNightclubWithCode = async (req: Request, res: Response) => {
       `\n[Instance] 🔢 Inciando Pairing Code para: ${instanceName} / Número: ${number}`,
     );
 
-    console.log(`[Instance] 🧹 Limpando sessões pendentes no Baileys...`);
-    await abortarConexaoInstancia(instanceName);
-
-    await new Promise((resolve) => setTimeout(resolve, 1500));
+    // 🪓 Força o logout e limpa o cache da Evolution ANTES de pedir o código numérico
+    await forcarDesconexao(instanceName);
 
     const webhookUrl =
       process.env.WEBHOOK_URL ||
@@ -221,30 +252,15 @@ export const connectNightclubWithCode = async (req: Request, res: Response) => {
       JSON.stringify(evolutionResponse),
     );
 
-    // 🛡️ ESCUDO DE SINCRONIZAÇÃO: Se a gringa diz que tá conectado, a gente obedece e arruma a casa!
+    // Como já forçamos o logout lá em cima, se a Evolution ainda disser que tá "open",
+    // é porque a API dela engasgou pesado. Vamos barrar e pedir pra tentar de novo.
     if (
       evolutionResponse?.instance?.state === "open" ||
       evolutionResponse?.state === "open"
     ) {
-      console.warn(
-        `[CRÍTICO] A instância já estava CONECTADA na Evolution! Arrumando o banco local...`,
+      throw new Error(
+        "A Evolution travou a sessão no estado 'open'. O cache está sendo limpo. Tente gerar novamente em 5 segundos.",
       );
-
-      await prisma.whatsappInstance.upsert({
-        where: { instanceName },
-        update: { status: "CONNECTED", qrCode: null },
-        create: {
-          instanceName,
-          nightclubId: nightclub.id,
-          status: "CONNECTED",
-          qrCode: null,
-        },
-      });
-
-      return res.status(400).json({
-        error:
-          "Seu WhatsApp JÁ ESTAVA CONECTADO! O sistema foi sincronizado, por favor recarregue a página.",
-      });
     }
 
     const pairingCode =
@@ -284,6 +300,7 @@ export const connectNightclubWithCode = async (req: Request, res: Response) => {
     console.error("[Instance Connect Code Error]", error.message || error);
     return res.status(500).json({
       error:
+        error.message ||
         "Erro ao gerar código de pareamento. Verifique o console do servidor.",
     });
   }
