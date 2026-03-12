@@ -9,7 +9,6 @@ export class GeminiService {
     process.env.MAIN_API_URL || "http://localhost:3000";
   private readonly MAIN_API_TOKEN = process.env.MAIN_API_TOKEN;
 
-  // 🛡️ LISTA DE BLINDAGEM LIMPA: Removido o 2.0 que o Google desativou. Foco direto no que funciona rápido.
   private fallbackModels = [
     "gemini-2.5-flash",
     "gemini-1.5-flash",
@@ -28,7 +27,12 @@ export class GeminiService {
           description: "Consulta setores disponíveis para uma data específica.",
           parameters: {
             type: "object",
-            properties: { date: { type: "string" } },
+            properties: {
+              date: {
+                type: "string",
+                description: "A data no formato AAAA-MM-DD",
+              },
+            },
             required: ["date"],
           },
         },
@@ -41,7 +45,10 @@ export class GeminiService {
               customerName: { type: "string" },
               customerPhone: { type: "string" },
               customerEmail: { type: "string" },
-              date: { type: "string" },
+              date: {
+                type: "string",
+                description: "A data no formato AAAA-MM-DD",
+              },
               spaceName: { type: "string" },
             },
             required: [
@@ -82,31 +89,39 @@ export class GeminiService {
         return null;
       }
 
+      // 🧠 1. MONTA E IMPRIME O PROMPT DO PAINEL (Para você auditar)
+      const systemContext = this.buildSystemContext(nightclub);
+      console.log(
+        `[${requestId}] 🕵️ PROMPT INJETADO NO CÉREBRO DA IA:\n--------------------------------------------------\n${systemContext}\n--------------------------------------------------`,
+      );
+
+      // 2. Busca o histórico de conversa limpo
       const chatHistory = await prisma.aiMemory.findMany({
         where: { nightclubId, customerPhone },
         orderBy: { createdAt: "asc" },
-        take: 12,
+        take: 12, // Mantém o contexto das últimas 12 interações
       });
 
-      const baseHistory = [
-        { role: "user", parts: [{ text: this.buildSystemContext(nightclub) }] },
-        { role: "model", parts: [{ text: "OK. Operando." }] },
-        ...chatHistory.map((m) => ({
-          role: m.role,
-          parts: [{ text: m.content }],
-        })),
-      ];
+      // Mapeia o histórico usando apenas as regras do Gemini (user e model)
+      const formattedHistory = chatHistory.map((m) => ({
+        role: m.role === "assistant" ? "model" : m.role,
+        parts: [{ text: m.content }],
+      }));
 
       let lastErrorType = "";
 
       for (const modelName of this.fallbackModels) {
         try {
           console.log(`[${requestId}] 🧠 Tentando modelo: ${modelName}`);
+
+          // 🚀 A GRANDE MUDANÇA: systemInstruction em vez de falsificar o histórico
           const model = this.genAI.getGenerativeModel({
             model: modelName,
+            systemInstruction: systemContext,
             tools: this.tools as any,
           });
-          const chat = model.startChat({ history: baseHistory });
+
+          const chat = model.startChat({ history: formattedHistory });
 
           let result = await chat.sendMessage(message);
           let chatResponse = result.response;
@@ -147,6 +162,7 @@ export class GeminiService {
 
           const responseText = chatResponse.text();
 
+          // Salva no banco para não perder a memória da próxima vez
           await prisma.aiMemory.createMany({
             data: [
               { nightclubId, customerPhone, role: "user", content: message },
@@ -162,7 +178,6 @@ export class GeminiService {
           console.log(`[${requestId}] ✅ SUCESSO (${modelName})`);
           return responseText;
         } catch (error: any) {
-          // 🧹 Limpa o log para não poluir o terminal, mostrando só o essencial
           const isQuota =
             error.message.includes("429") || error.message.includes("Quota");
           if (isQuota) lastErrorType = "QUOTA_EXCEEDED";
@@ -174,10 +189,9 @@ export class GeminiService {
         }
       }
 
-      // Se todos os modelos falharem, avisa de forma elegante
       if (lastErrorType === "QUOTA_EXCEEDED") {
         console.error(
-          `[${requestId}] 🚨 ALERTA CRÍTICO: Todas as tentativas falharam por falta de cota no Google API. Cadastre o billing!`,
+          `[${requestId}] 🚨 ALERTA CRÍTICO: Todas as tentativas falharam por falta de cota no Google API.`,
         );
       }
       return "Estou com uma fila de espera grande no momento. Pode me enviar um 'Oi' novamente em 1 minuto?";
@@ -192,22 +206,28 @@ export class GeminiService {
     dateStr: string,
     requestId: string,
   ) {
-    const date = startOfDay(new Date(dateStr));
-    const allSpaces = await prisma.space.findMany({
-      where: { nightclubId, status: "ACTIVE" },
-    });
-    const occupiedReservations = await prisma.reservation.findMany({
-      where: { nightclubId, date, status: { in: ["CONFIRMED", "PENDING"] } },
-      select: { spaceId: true },
-    });
-    const occupiedIds = occupiedReservations.map((r) => r.spaceId);
-    const available = allSpaces.filter((s) => !occupiedIds.includes(s.id));
+    try {
+      // Garantindo que a data venha formatada corretamente para o banco
+      const date = startOfDay(new Date(dateStr));
+      const allSpaces = await prisma.space.findMany({
+        where: { nightclubId, status: "ACTIVE" },
+      });
+      const occupiedReservations = await prisma.reservation.findMany({
+        where: { nightclubId, date, status: { in: ["CONFIRMED", "PENDING"] } },
+        select: { spaceId: true },
+      });
+      const occupiedIds = occupiedReservations.map((r) => r.spaceId);
+      const available = allSpaces.filter((s) => !occupiedIds.includes(s.id));
 
-    if (available.length === 0) return "Nenhum setor disponível.";
-    return (
-      "Disponíveis: " +
-      available.map((s) => `${s.name} (R$${s.price})`).join(", ")
-    );
+      if (available.length === 0)
+        return "Nenhum setor disponível para esta data.";
+      return (
+        "Disponíveis para esta data: " +
+        available.map((s) => `${s.name} (R$${s.price})`).join(", ")
+      );
+    } catch (error) {
+      return "Erro ao ler a data. Peça ao cliente para fornecer a data exata.";
+    }
   }
 
   private async createReservationAndPayment(
@@ -226,7 +246,8 @@ export class GeminiService {
           status: "ACTIVE",
         },
       });
-      if (!space) return "Erro: Setor inexistente.";
+      if (!space)
+        return "Erro: Setor inexistente. Verifique os setores disponíveis.";
 
       const customer = await prisma.customer.upsert({
         where: { email: args.customerEmail },
@@ -263,29 +284,32 @@ export class GeminiService {
         { headers: { "x-internal-key": this.MAIN_API_TOKEN } },
       );
 
-      return `CRIADA! PIX: ${pixResponse.data.pixCode}`;
+      return `CRIADA COM SUCESSO! Código PIX Copia e Cola: ${pixResponse.data.pixCode}`;
     } catch (e: any) {
       console.error(`[${requestId}] 💥 Erro na criação: ${e.message}`);
-      return "Erro no processo de PIX.";
+      return "Erro no processo de PIX. Peça para o cliente aguardar.";
     }
   }
 
   private buildSystemContext(nightclub: any) {
-    // 🧠 Puxa o prompt customizado que o dono escreveu no painel
     const customPrompt =
       nightclub?.aiAgent?.systemPrompt ||
       "Você é um assistente virtual prestativo.";
 
-    // 🔗 Funde o prompt do painel com as regras duras do sistema para garantir que as funções rodem
-    return `IDENTIDADE E REGRAS DE ATENDIMENTO:
+    // ⏱️ Pega a data de hoje dinamicamente
+    const dataDeHoje = format(new Date(), "dd/MM/yyyy");
+
+    return `IDENTIDADE DO AGENTE:
 ${customPrompt}
 
----
-INSTRUÇÕES OBRIGATÓRIAS DO SISTEMA (NÃO IGNORE):
-1. Você representa a balada: ${nightclub.name}.
-2. SEMPRE use a função 'get_available_spaces' antes de falar sobre disponibilidade de setores.
-3. Para gerar a reserva, use 'create_reservation'.
-4. Ao gerar uma reserva com sucesso, EXIBA o código PIX recebido para o cliente copiar e colar.
-5. Responda de forma natural, em Português do Brasil.`;
+-------------------
+REGRAS OBRIGATÓRIAS (NÃO QUEBRE SOB HIPÓTESE ALGUMA):
+1. Você representa EXCLUSIVAMENTE a balada: ${nightclub.name}.
+2. NUNCA diga que você é um "modelo de linguagem", "IA" ou "treinado pelo Google". Aja como humano 100% do tempo.
+3. HOJE É DIA: ${dataDeHoje}. Se o cliente disser "hoje", "amanhã", etc., use esta data como base matemática.
+4. Você NÃO sabe os setores disponíveis de cor. SEMPRE use a função 'get_available_spaces' para verificar a disponibilidade.
+5. Nas funções, envie as datas sempre no formato AAAA-MM-DD.
+6. Quando o cliente escolher o setor, use 'create_reservation' para gerar o PIX. Exija nome, email, telefone e o setor desejado ANTES de chamar a função.
+7. Quando o PIX for gerado, entregue o código "Copia e Cola" de forma clara e amigável.`;
   }
 }
