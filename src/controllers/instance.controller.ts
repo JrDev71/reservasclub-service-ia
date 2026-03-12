@@ -5,6 +5,7 @@ import {
   configurarWebhook,
   conectarInstancia,
   abortarConexaoInstancia,
+  conectarInstanciaComCodigo, // 🔢 Importação nova aqui!
 } from "../services/evolution.service";
 
 // ============================================================================
@@ -23,7 +24,7 @@ const iniciarCronometroCancelamento = (instanceName: string) => {
         (instancia.status === "QRCODE" || instancia.status === "CONNECTING")
       ) {
         console.log(
-          `[Timer] ⏰ 45 segundos passaram. QR Code não foi lido para ${instanceName}. Abortando...`,
+          `[Timer] ⏰ 45 segundos passaram. Conexão pendente não foi concluída para ${instanceName}. Abortando...`,
         );
 
         await abortarConexaoInstancia(instanceName);
@@ -43,7 +44,7 @@ const iniciarCronometroCancelamento = (instanceName: string) => {
         error.message,
       );
     }
-  }, 45000);
+  }, 45000); // 45 segundos de tolerância
 };
 
 // ============================================================================
@@ -118,7 +119,7 @@ export const createNightclubInstance = async (req: Request, res: Response) => {
 };
 
 // ============================================================================
-// 2. RECONEXÃO / FALLBACK (Com Auto-Sync de Banco de Dados)
+// 2. RECONEXÃO / FALLBACK (VIA QR CODE TRADICIONAL)
 // ============================================================================
 export const connectNightclubInstance = async (req: Request, res: Response) => {
   try {
@@ -139,22 +140,17 @@ export const connectNightclubInstance = async (req: Request, res: Response) => {
       `[Instance] 🔄 Solicitando reconexão na Evolution: ${instanceName}`,
     );
 
-    // 👻 EXORCISMO DO WEBHOOK: Atualizamos a URL da Evolution antes de pedir o QR Code
     const webhookUrl =
       process.env.WEBHOOK_URL ||
       "http://host.docker.internal:3001/evolution/webhook";
     await configurarWebhook(instanceName, webhookUrl);
 
-    // Agora sim pedimos a conexão
     const evolutionResponse = await conectarInstancia(instanceName);
 
-    // Às vezes a Evolution não devolve na hora. Se vier vazio, o Webhook vai salvar depois.
     const qrCodeBase64 =
       evolutionResponse?.base64 || evolutionResponse?.qrcode?.base64 || null;
     const initialStatus = qrCodeBase64 ? "QRCODE" : "CONNECTING";
 
-    // 🛡️ MUDANÇA CRÍTICA: Trocado update por UPSERT.
-    // Se a Evolution tem a instância, mas nosso banco local não tem, nós criamos agora!
     const whatsappInstance = await prisma.whatsappInstance.upsert({
       where: { instanceName },
       update: {
@@ -178,5 +174,81 @@ export const connectNightclubInstance = async (req: Request, res: Response) => {
   } catch (error: any) {
     console.error("[Instance Connect Error]", error.message || error);
     return res.status(500).json({ error: "Erro ao reconectar a instância." });
+  }
+};
+
+// ============================================================================
+// 3. 🔢 RECONEXÃO VIA CÓDIGO DE PAREAMENTO (NOVO MÉTODO)
+// ============================================================================
+export const connectNightclubWithCode = async (req: Request, res: Response) => {
+  try {
+    const { nightclubId, number } = req.body;
+
+    if (!nightclubId || !number)
+      return res
+        .status(400)
+        .json({ error: "ID da balada e número do celular são obrigatórios." });
+
+    const nightclub = await prisma.nightclub.findUnique({
+      where: { id: nightclubId as string },
+    });
+
+    if (!nightclub)
+      return res.status(404).json({ error: "Balada não encontrada." });
+
+    const instanceName = `balada_${nightclub.slug}`;
+    console.log(
+      `[Instance] 🔢 Solicitando Pairing Code na Evolution: ${instanceName} para o número ${number}`,
+    );
+
+    const webhookUrl =
+      process.env.WEBHOOK_URL ||
+      "http://host.docker.internal:3001/evolution/webhook";
+    await configurarWebhook(instanceName, webhookUrl);
+
+    // Bate na API da Evolution enviando o número
+    const evolutionResponse = await conectarInstanciaComCodigo(
+      instanceName,
+      number,
+    );
+
+    // Extrai o código de pareamento (geralmente vem em evolutionResponse.code)
+    const pairingCode =
+      evolutionResponse?.code || evolutionResponse?.pairingCode;
+
+    if (!pairingCode) {
+      throw new Error(
+        "Evolution não retornou o código de pareamento. Verifique se a instância está livre.",
+      );
+    }
+
+    // Atualiza o banco pra CONNECTING (limpando qualquer QR Code velho)
+    await prisma.whatsappInstance.upsert({
+      where: { instanceName },
+      update: {
+        status: "CONNECTING",
+        qrCode: null,
+      },
+      create: {
+        instanceName,
+        nightclubId: nightclub.id,
+        status: "CONNECTING",
+        qrCode: null,
+      },
+    });
+
+    // Inicia a guilhotina. O cliente tem 45s para digitar o código no celular!
+    iniciarCronometroCancelamento(instanceName);
+
+    return res.status(200).json({
+      success: true,
+      code: pairingCode, // Retornamos o código de 8 dígitos pro painel frontend
+    });
+  } catch (error: any) {
+    console.error("[Instance Connect Code Error]", error.message || error);
+    return res.status(500).json({
+      error:
+        "Erro ao gerar código de pareamento. Verifique se o número está correto (com DDI e DDD).",
+    });
   }
 };

@@ -60,6 +60,35 @@ export const conectarInstancia = async (instanceName: string) => {
   }
 };
 
+// ============================================================================
+// 🔢 NOVA FUNÇÃO: PAIRING CODE (CÓDIGO DE PAREAMENTO)
+// ============================================================================
+export const conectarInstanciaComCodigo = async (
+  instanceName: string,
+  number: string,
+) => {
+  try {
+    // Limpa qualquer máscara do número antes de enviar para a Evolution
+    const cleanNumber = number.replace(/\D/g, "");
+
+    console.log(
+      `[DEBUG Evolution] Solicitando Código de Pareamento para: ${instanceName} / Número: ${cleanNumber}`,
+    );
+
+    const response = await evolutionClient.get(
+      `/instance/connect/${instanceName}?number=${cleanNumber}`,
+    );
+
+    return response.data;
+  } catch (error: any) {
+    console.error(
+      `[Evolution API] Erro ao gerar código de pareamento para ${instanceName}:`,
+      error.response?.data || error.message,
+    );
+    throw new Error("Falha ao gerar código de pareamento");
+  }
+};
+
 export const abortarConexaoInstancia = async (instanceName: string) => {
   try {
     console.log(
@@ -100,9 +129,6 @@ export const configurarWebhook = async (
   }
 };
 
-// ============================================================================
-// 💬 ENVIO DE TEXTO NORMAL
-// ============================================================================
 export const enviarMensagemWhatsApp = async (
   instanceName: string,
   number: string,
@@ -127,9 +153,6 @@ export const enviarMensagemWhatsApp = async (
   }
 };
 
-// ============================================================================
-// 📸 NOVA FUNÇÃO: ENVIO DE MÍDIA (Base64) PARA O QR CODE DO PIX
-// ============================================================================
 export const enviarMediaWhatsApp = async (
   instanceName: string,
   number: string,
@@ -137,8 +160,6 @@ export const enviarMediaWhatsApp = async (
   caption: string = "",
 ) => {
   try {
-    // A Evolution espera o base64 puro ou com o prefixo do mimetype.
-    // Como a maioria das vezes o Mercado Pago já manda limpo, nós forçamos a estrutura correta.
     const mediaFormatada = base64Data.includes("base64,")
       ? base64Data
       : `data:image/png;base64,${base64Data}`;
