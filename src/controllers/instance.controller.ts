@@ -118,7 +118,7 @@ export const createNightclubInstance = async (req: Request, res: Response) => {
 };
 
 // ============================================================================
-// 2. RECONEXÃO / FALLBACK (Onde matamos o fantasma do Webhook)
+// 2. RECONEXÃO / FALLBACK (Com Auto-Sync de Banco de Dados)
 // ============================================================================
 export const connectNightclubInstance = async (req: Request, res: Response) => {
   try {
@@ -151,12 +151,20 @@ export const connectNightclubInstance = async (req: Request, res: Response) => {
     // Às vezes a Evolution não devolve na hora. Se vier vazio, o Webhook vai salvar depois.
     const qrCodeBase64 =
       evolutionResponse?.base64 || evolutionResponse?.qrcode?.base64 || null;
+    const initialStatus = qrCodeBase64 ? "QRCODE" : "CONNECTING";
 
-    const whatsappInstance = await prisma.whatsappInstance.update({
+    // 🛡️ MUDANÇA CRÍTICA: Trocado update por UPSERT.
+    // Se a Evolution tem a instância, mas nosso banco local não tem, nós criamos agora!
+    const whatsappInstance = await prisma.whatsappInstance.upsert({
       where: { instanceName },
-      data: {
-        // Se vier vazio, fica CONNECTING (girando bolinha) até o Webhook receber a imagem
-        status: qrCodeBase64 ? "QRCODE" : "CONNECTING",
+      update: {
+        status: initialStatus,
+        qrCode: qrCodeBase64,
+      },
+      create: {
+        instanceName,
+        nightclubId: nightclub.id,
+        status: initialStatus,
         qrCode: qrCodeBase64,
       },
     });
