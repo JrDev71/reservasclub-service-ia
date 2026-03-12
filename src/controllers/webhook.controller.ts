@@ -32,8 +32,28 @@ export const handleEvolutionWebhook = async (req: Request, res: Response) => {
 
         let statusFinal = status;
 
+        // Puxa a verdade absoluta do banco antes de tomar decisão
+        const currentState = await prisma.whatsappInstance.findUnique({
+          where: { instanceName },
+        });
+
+        // 🛑 TRAVA: Se falhou/expirou (e não estava conectado)
+        if (
+          status === "refused" ||
+          (status === "close" && currentState?.status !== "CONNECTED")
+        ) {
+          statusFinal = "DISCONNECTED";
+          console.log(
+            `[Sentinela] Tempo esgotado/Recusado. Limpando QR Code para resetar o botão...`,
+          );
+
+          await prisma.whatsappInstance.update({
+            where: { instanceName },
+            data: { status: "DISCONNECTED", qrCode: null },
+          });
+        }
         // ✅ SALVAÇÃO: Se conectou, atualiza na hora e desarma a guilhotina!
-        if (status === "open" || status === "connected") {
+        else if (status === "open" || status === "connected") {
           statusFinal = "CONNECTED";
           console.log(
             `[Sentinela] 🟢 Conexão de sucesso! Atualizando banco para desarmar a guilhotina...`,
@@ -44,25 +64,15 @@ export const handleEvolutionWebhook = async (req: Request, res: Response) => {
             data: { status: "CONNECTED", qrCode: null },
           });
         }
-        // 🔴 RECUSA: O usuário cancelou a conexão no celular
-        else if (status === "refused") {
-          statusFinal = "DISCONNECTED";
-          console.log(
-            `[Sentinela] 🔴 Conexão recusada pelo aparelho. Limpando...`,
-          );
-
-          await prisma.whatsappInstance.update({
-            where: { instanceName },
-            data: { status: "DISCONNECTED", qrCode: null },
-          });
-        }
-        // 🟡 CLOSE / CONNECTING: O WhatsApp faz dezenas de mini-quedas para sincronizar (Baileys refresh).
-        // Não apagamos nada do banco! O verdadeiro timeout de QR Code é controlado apenas pela Guilhotina de 45s.
-        else if (status === "close" || status === "connecting") {
-          statusFinal = status === "close" ? "DISCONNECTED" : "CONNECTING"; // Apenas para repassar à Main API
-          console.log(
-            `[Sentinela] 🟡 Instância em flutuação (${status}). Ignorando ações no banco...`,
-          );
+        // 🛡️ BLINDAGEM CONTRA RESTART DO RENDER
+        else if (status === "connecting" || status === "close") {
+          if (currentState?.status === "CONNECTED") {
+            console.log(
+              `[Sentinela] 🛡️ Blindagem Ativa: Instância flutuou (${status}), mas já está CONNECTED. Ocultando da Main API...`,
+            );
+            return; // Morre aqui. Não deixa a Main API estragar o status do painel!
+          }
+          statusFinal = status === "close" ? "DISCONNECTED" : "CONNECTING";
         }
 
         // Avisando Main API sobre a mudança de status
@@ -80,13 +90,12 @@ export const handleEvolutionWebhook = async (req: Request, res: Response) => {
     }
 
     // =======================================================================
-    // 📱 ESCUTA: RENOVAÇÃO DO QR CODE (A cada 10~15s)
+    // 📱 ESCUTA: RENOVAÇÃO DO QR CODE
     // =======================================================================
     if (eventName === "qrcode.updated") {
       const base64 = body.data?.qrcode?.base64 || body.data?.base64;
 
       if (base64) {
-        // Só salva o QR Code se o cara não estiver conectado
         const checkInstance = await prisma.whatsappInstance.findUnique({
           where: { instanceName },
         });
@@ -99,6 +108,10 @@ export const handleEvolutionWebhook = async (req: Request, res: Response) => {
             where: { instanceName },
             data: { qrCode: base64, status: "QRCODE" },
           });
+        } else {
+          console.log(
+            `[Sentinela] 👻 QR Code fantasma ignorado. A instância já está CONNECTED.`,
+          );
         }
       }
       return;

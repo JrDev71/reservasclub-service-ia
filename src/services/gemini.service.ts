@@ -9,13 +9,11 @@ export class GeminiService {
     process.env.MAIN_API_URL || "http://localhost:3000";
   private readonly MAIN_API_TOKEN = process.env.MAIN_API_TOKEN;
 
-  // 🛡️ LISTA DE BLINDAGEM LIMPA (Apenas modelos ativos e de alta performance)
+  // 🛡️ LISTA DE BLINDAGEM LIMPA: Removido o 2.0 que o Google desativou. Foco direto no que funciona rápido.
   private fallbackModels = [
-    "gemini-2.0-flash",
     "gemini-2.5-flash",
-    "gemini-2.0-flash-lite",
+    "gemini-1.5-flash",
     "gemini-flash-latest",
-    "gemini-pro-latest",
   ];
 
   constructor() {
@@ -273,6 +271,21 @@ export class GeminiService {
   }
 
   private buildSystemContext(nightclub: any) {
-    return `VOCÊ É O GERENTE DA ${nightclub.name}. OBRIGATÓRIO: Use 'get_available_spaces' antes de confirmar. Exiba o código PIX recebido. Responda em Português.`;
+    // 🧠 Puxa o prompt customizado que o dono escreveu no painel
+    const customPrompt =
+      nightclub?.aiAgent?.systemPrompt ||
+      "Você é um assistente virtual prestativo.";
+
+    // 🔗 Funde o prompt do painel com as regras duras do sistema para garantir que as funções rodem
+    return `IDENTIDADE E REGRAS DE ATENDIMENTO:
+${customPrompt}
+
+---
+INSTRUÇÕES OBRIGATÓRIAS DO SISTEMA (NÃO IGNORE):
+1. Você representa a balada: ${nightclub.name}.
+2. SEMPRE use a função 'get_available_spaces' antes de falar sobre disponibilidade de setores.
+3. Para gerar a reserva, use 'create_reservation'.
+4. Ao gerar uma reserva com sucesso, EXIBA o código PIX recebido para o cliente copiar e colar.
+5. Responda de forma natural, em Português do Brasil.`;
   }
 }
