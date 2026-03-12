@@ -2,7 +2,6 @@ import { GoogleGenerativeAI } from "@google/generative-ai";
 import axios from "axios";
 import { prisma } from "../lib/prisma";
 import { startOfDay, format } from "date-fns";
-import { enviarMediaWhatsApp } from "./evolution.service";
 
 export class GeminiService {
   private genAI: GoogleGenerativeAI;
@@ -309,44 +308,15 @@ export class GeminiService {
       );
 
       const pixCode = pixResponse.data.pixCode;
-      const base64Image = pixResponse.data.qrCodeBase64;
 
       const checkoutLink = `https://reservasclub.com.br/checkout/${reservation.id}`;
-
-      if (base64Image && base64Image.length > 50) {
-        try {
-          const instance = await prisma.whatsappInstance.findFirst({
-            where: { nightclubId, status: { in: ["CONNECTED", "OPEN"] } },
-            orderBy: { createdAt: "desc" },
-          });
-
-          if (instance) {
-            const safeNumber = customerPhone.replace("@s.whatsapp.net", "");
-
-            console.log(
-              `[${requestId}] 📸 Disparando Imagem do QR Code PIX para ${safeNumber}`,
-            );
-            await enviarMediaWhatsApp(
-              instance.instanceName,
-              safeNumber,
-              base64Image,
-              "Seu QR Code para pagamento",
-            );
-          }
-        } catch (mediaError: any) {
-          console.error(
-            `[${requestId}] ⚠️ Erro ao enviar imagem do QR Code:`,
-            mediaError.message,
-          );
-        }
-      }
 
       return `RESERVA CRIADA COM SUCESSO!
       
 1. Código PIX Copia e Cola: ${pixCode}
-2. Link do Checkout (para acompanhar ou pagar com cartão): ${checkoutLink}
+2. Link do Checkout: ${checkoutLink}
 
-Diga ao cliente que a imagem do QR Code já foi enviada acima. Repasse o Copia e Cola e o Link do Checkout.`;
+INSTRUÇÕES FINAIS PARA A IA: Repasse o Copia e Cola e a URL do Link do Checkout como TEXTO PURO. NUNCA use formatação markdown como [url](url). Apenas cole o link limpo.`;
     } catch (e: any) {
       console.error(`[${requestId}] 💥 Erro na criação: ${e.message}`);
       return "Erro no processo de PIX. Peça para o cliente aguardar.";
@@ -371,8 +341,8 @@ REGRAS OBRIGATÓRIAS DE ATENDIMENTO (NÃO QUEBRE SOB HIPÓTESE ALGUMA):
 4. FLUXO DE RESERVA: SÓ chame a função 'get_available_spaces' SE o cliente perguntar o que tem disponível ou disser que quer reservar algo.
 5. Nas chamadas de função, envie a data sempre no formato matemático AAAA-MM-DD.
 6. APÓS usar 'get_available_spaces', responda ao cliente listando as opções e preços que você encontrou.
-7. PARA FECHAR RESERVA: SÓ chame 'create_reservation' QUANDO o cliente escolher o setor. Peça o nome, email e telefone ANTES de criar.
-8. APÓS usar 'create_reservation', entregue o código "Copia e Cola" PIX e o Link do Checkout na sua resposta de texto.
+7. PARA FECHAR RESERVA: SÓ chame 'create_reservation' QUANDO o cliente escolher o setor. Peça o nome, email e telefone ANTES de chamar a função.
+8. APÓS usar 'create_reservation', entregue o código "Copia e Cola" PIX e o Link do Checkout em formato de TEXTO PURO. NUNCA use formatação markdown de links como [link](link), apenas escreva o endereço completo limpo.
 9. 🛑 O histórico contém o passado. SÓ crie uma reserva se o cliente pedir uma reserva NOVA na mensagem atual.`;
   }
 }
