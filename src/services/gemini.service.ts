@@ -2,6 +2,7 @@ import { GoogleGenerativeAI } from "@google/generative-ai";
 import axios from "axios";
 import { prisma } from "../lib/prisma";
 import { startOfDay, format } from "date-fns";
+import { enviarMediaWhatsApp } from "./evolution.service";
 
 export class GeminiService {
   private genAI: GoogleGenerativeAI;
@@ -91,28 +92,21 @@ export class GeminiService {
 
       // 🧠 1. MONTA E IMPRIME O PROMPT DO PAINEL
       const systemContext = this.buildSystemContext(nightclub);
-      console.log(
-        `[${requestId}] 🕵️ PROMPT INJETADO NO CÉREBRO DA IA:\n--------------------------------------------------\n${systemContext}\n--------------------------------------------------`,
-      );
 
-      // 2. Busca o histórico recente de forma inteligente (pegando de trás pra frente)
+      // 2. Busca o histórico
       const rawHistory = await prisma.aiMemory.findMany({
         where: { nightclubId, customerPhone },
-        orderBy: { createdAt: "desc" }, // Pega as mais recentes primeiro
+        orderBy: { createdAt: "desc" },
         take: 12,
       });
 
-      // Como pegamos de trás pra frente, inverte o array para voltar à ordem cronológica (história real)
       rawHistory.reverse();
 
-      // Mapeia para o padrão rigoroso do Gemini
       let formattedHistory = rawHistory.map((m) => ({
         role: m.role === "assistant" ? "model" : m.role,
         parts: [{ text: m.content }],
       }));
 
-      // 🛡️ BLINDAGEM DE HISTÓRICO: O Gemini dá pau se a primeira mensagem não for do 'user'.
-      // Então, se o histórico começar com 'model', nós cortamos a cabeça da lista até achar um 'user'.
       while (
         formattedHistory.length > 0 &&
         formattedHistory[0].role !== "user"
@@ -137,7 +131,10 @@ export class GeminiService {
           let result = await chat.sendMessage(message);
           let chatResponse = result.response;
           let call = chatResponse.functionCalls()?.[0];
+          let finalResponseText = chatResponse.text() || "";
 
+          // Loop de funções corrigido: Se ele chama uma função, nós DEVOLVEMOS o resultado
+          // e OBRIGAMOS a IA a gerar uma resposta em texto.
           while (call) {
             console.log(`[${requestId}] 🛠️ IA usou: ${call.name}`);
             const args: any = call.args;
@@ -155,9 +152,11 @@ export class GeminiService {
                 nightclub,
                 args,
                 requestId,
+                customerPhone, // <-- Passando o número para disparar a imagem
               );
             }
 
+            // Manda o resultado da função de volta pra IA
             const nextStep = await chat.sendMessage([
               {
                 functionResponse: {
@@ -169,11 +168,14 @@ export class GeminiService {
 
             chatResponse = nextStep.response;
             call = chatResponse.functionCalls()?.[0];
+
+            // Se ela não chamou outra função, pegamos o texto final que ela gerou
+            if (!call) {
+              finalResponseText = chatResponse.text();
+            }
           }
 
-          const responseText = chatResponse.text();
-
-          // Salva no banco as mensagens novas
+          // Salva no banco as mensagens
           await prisma.aiMemory.createMany({
             data: [
               { nightclubId, customerPhone, role: "user", content: message },
@@ -181,13 +183,13 @@ export class GeminiService {
                 nightclubId,
                 customerPhone,
                 role: "model",
-                content: responseText,
+                content: finalResponseText,
               },
             ],
           });
 
           console.log(`[${requestId}] ✅ SUCESSO (${modelName})`);
-          return responseText;
+          return finalResponseText;
         } catch (error: any) {
           const isQuota =
             error.message.includes("429") || error.message.includes("Quota");
@@ -245,6 +247,7 @@ export class GeminiService {
     nightclub: any,
     args: any,
     requestId: string,
+    customerPhone: string,
   ) {
     console.log(`[${requestId}] 📝 Criando reserva para ${args.customerName}`);
     try {
@@ -294,7 +297,45 @@ export class GeminiService {
         { headers: { "x-internal-key": this.MAIN_API_TOKEN } },
       );
 
-      return `CRIADA COM SUCESSO! Código PIX Copia e Cola: ${pixResponse.data.pixCode}`;
+      const pixCode = pixResponse.data.pixCode;
+      const base64Image = pixResponse.data.qrCodeBase64;
+      const checkoutLink = `https://reservasclub.com/checkout/${reservation.id}`;
+
+      // 📸 Dispara a imagem do QR Code direto no WhatsApp
+      if (base64Image) {
+        try {
+          // Busca o nome da instância ativa
+          const instance = await prisma.whatsappInstance.findFirst({
+            where: { nightclubId, status: { in: ["CONNECTED", "OPEN"] } },
+            orderBy: { createdAt: "desc" },
+          });
+
+          if (instance) {
+            console.log(
+              `[${requestId}] 📸 Disparando Imagem do QR Code PIX para ${customerPhone}`,
+            );
+            await enviarMediaWhatsApp(
+              instance.instanceName,
+              customerPhone,
+              base64Image,
+              "Seu QR Code para pagamento",
+            );
+          }
+        } catch (mediaError: any) {
+          console.error(
+            `[${requestId}] ⚠️ Erro ao enviar imagem do QR Code:`,
+            mediaError.message,
+          );
+        }
+      }
+
+      // Retorna para a IA o texto que ela deve falar
+      return `RESERVA CRIADA COM SUCESSO!
+      
+1. Código PIX Copia e Cola: ${pixCode}
+2. Link do Checkout (para acompanhar ou pagar com cartão): ${checkoutLink}
+
+Diga ao cliente que a imagem do QR Code já foi enviada acima. Repasse o Copia e Cola e o Link do Checkout.`;
     } catch (e: any) {
       console.error(`[${requestId}] 💥 Erro na criação: ${e.message}`);
       return "Erro no processo de PIX. Peça para o cliente aguardar.";
@@ -306,7 +347,6 @@ export class GeminiService {
       nightclub?.aiAgent?.systemPrompt ||
       "Você é um assistente virtual prestativo.";
 
-    // ⏱️ Pega a data de hoje dinamicamente
     const dataDeHoje = format(new Date(), "dd/MM/yyyy");
 
     return `IDENTIDADE DO AGENTE:
@@ -318,8 +358,9 @@ REGRAS OBRIGATÓRIAS (NÃO QUEBRE SOB HIPÓTESE ALGUMA):
 2. NUNCA diga que você é um "modelo de linguagem", "IA" ou "treinado pelo Google". Aja como humano 100% do tempo.
 3. HOJE É DIA: ${dataDeHoje}. Se o cliente disser "hoje", "amanhã", etc., use esta data como base matemática.
 4. Você NÃO sabe os setores disponíveis de cor. SEMPRE use a função 'get_available_spaces' para verificar a disponibilidade.
-5. Nas funções, envie as datas sempre no formato AAAA-MM-DD.
-6. Quando o cliente escolher o setor, use 'create_reservation' para gerar o PIX. Exija nome, email, telefone e o setor desejado ANTES de chamar a função.
-7. Quando o PIX for gerado, entregue o código "Copia e Cola" de forma clara e amigável.`;
+5. APÓS usar 'get_available_spaces', VOCÊ DEVE RESPONDER O CLIENTE listando as opções que encontrou.
+6. Nas funções, envie as datas sempre no formato AAAA-MM-DD.
+7. Quando o cliente escolher o setor, use 'create_reservation'. Exija nome, email, telefone e o setor desejado ANTES de chamar a função.
+8. APÓS usar 'create_reservation', entregue a resposta informando que o QR Code foi enviado em imagem, mostre o código "Copia e Cola" e envie o Link do Checkout.`;
   }
 }

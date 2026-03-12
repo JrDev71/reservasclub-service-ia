@@ -2,6 +2,19 @@ import { Request, Response } from "express";
 import { enviarMensagemWhatsApp } from "../services/evolution.service";
 import { prisma } from "../lib/prisma";
 
+// 🛡️ Função para blindar o número (Evolution Exige Padrão Internacional)
+const formatPhoneNumber = (phone: string): string => {
+  // Tira tudo que não for número (espaço, traço, parêntese, +, etc)
+  let cleanNumber = phone.replace(/\D/g, "");
+
+  // Se o número tem 10 ou 11 dígitos (Ex: 11999999999), significa que o cliente esqueceu o DDI do Brasil (55)
+  if (cleanNumber.length === 10 || cleanNumber.length === 11) {
+    cleanNumber = `55${cleanNumber}`;
+  }
+
+  return cleanNumber;
+};
+
 export const sendSimpleMessage = async (req: Request, res: Response) => {
   try {
     const { nightclubId, number, text } = req.body;
@@ -30,12 +43,18 @@ export const sendSimpleMessage = async (req: Request, res: Response) => {
         .json({ error: "Nenhuma instância conectada para esta balada." });
     }
 
+    // Limpa e padroniza o número antes de enviar
+    const safeNumber = formatPhoneNumber(number);
+
     console.log(
-      `[WhatsApp Controller] Enviando mensagem manual para ${number} via ${instance.instanceName}`,
+      `[WhatsApp Controller] Formatando número: ${number} -> ${safeNumber}`,
+    );
+    console.log(
+      `[WhatsApp Controller] Enviando mensagem manual para ${safeNumber} via ${instance.instanceName}`,
     );
 
-    // Dispara via Evolution (usando o service que já temos pronto)
-    await enviarMensagemWhatsApp(instance.instanceName, number, text);
+    // Dispara via Evolution
+    await enviarMensagemWhatsApp(instance.instanceName, safeNumber, text);
 
     return res
       .status(200)

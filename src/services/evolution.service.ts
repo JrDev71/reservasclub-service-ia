@@ -36,20 +36,16 @@ export const criarInstancia = async (instanceName: string) => {
       `[Evolution API] Erro ao criar instância ${instanceName}:`,
       error.response?.data || error.message,
     );
-    throw error; // 🛡️ Repassamos o erro original para o controller saber se é 409
+    throw error;
   }
 };
 
-// ============================================================================
-// 🔄 NOVA FUNÇÃO: RECONEXÃO / FALLBACK
-// ============================================================================
 export const conectarInstancia = async (instanceName: string) => {
   try {
     console.log(
       `[DEBUG Evolution] Solicitando reconexão/QR Code para: ${instanceName}`,
     );
 
-    // A rota GET /instance/connect devolve o status e o QR Code em Base64
     const response = await evolutionClient.get(
       `/instance/connect/${instanceName}`,
     );
@@ -64,9 +60,6 @@ export const conectarInstancia = async (instanceName: string) => {
   }
 };
 
-// ============================================================================
-// 🛑 NOVA FUNÇÃO: A GUILHOTINA (Manda a Evolution parar de gerar QR Code)
-// ============================================================================
 export const abortarConexaoInstancia = async (instanceName: string) => {
   try {
     console.log(
@@ -74,7 +67,6 @@ export const abortarConexaoInstancia = async (instanceName: string) => {
     );
     await evolutionClient.delete(`/instance/logout/${instanceName}`);
   } catch (error: any) {
-    // Ignoramos erro de 404/400 aqui, pois se a instância já caiu, o objetivo já foi atingido
     console.log(
       `[Evolution API] Logout processado/ignorado para ${instanceName}.`,
     );
@@ -108,9 +100,9 @@ export const configurarWebhook = async (
   }
 };
 
-/**
- * Envia uma mensagem de texto (Atualizado para o padrão Evolution v2)
- */
+// ============================================================================
+// 💬 ENVIO DE TEXTO NORMAL
+// ============================================================================
 export const enviarMensagemWhatsApp = async (
   instanceName: string,
   number: string,
@@ -130,6 +122,42 @@ export const enviarMensagemWhatsApp = async (
   } catch (error: any) {
     console.error(
       `[Evolution API] Erro ao enviar mensagem para ${number}:`,
+      error.response?.data || error.message,
+    );
+  }
+};
+
+// ============================================================================
+// 📸 NOVA FUNÇÃO: ENVIO DE MÍDIA (Base64) PARA O QR CODE DO PIX
+// ============================================================================
+export const enviarMediaWhatsApp = async (
+  instanceName: string,
+  number: string,
+  base64Data: string,
+  caption: string = "",
+) => {
+  try {
+    // A Evolution espera o base64 puro ou com o prefixo do mimetype.
+    // Como a maioria das vezes o Mercado Pago já manda limpo, nós forçamos a estrutura correta.
+    const mediaFormatada = base64Data.includes("base64,")
+      ? base64Data
+      : `data:image/png;base64,${base64Data}`;
+
+    const response = await evolutionClient.post(
+      `/message/sendMedia/${instanceName}`,
+      {
+        number: number,
+        mediatype: "image",
+        mimetype: "image/png",
+        caption: caption,
+        media: mediaFormatada,
+        delay: 1500,
+      },
+    );
+    return response.data;
+  } catch (error: any) {
+    console.error(
+      `[Evolution API] Erro ao enviar mídia para ${number}:`,
       error.response?.data || error.message,
     );
   }
