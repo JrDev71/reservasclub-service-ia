@@ -90,10 +90,8 @@ export class GeminiService {
         return null;
       }
 
-      // 🧠 1. MONTA E IMPRIME O PROMPT DO PAINEL
       const systemContext = this.buildSystemContext(nightclub);
 
-      // 2. Busca o histórico
       const rawHistory = await prisma.aiMemory.findMany({
         where: { nightclubId, customerPhone },
         orderBy: { createdAt: "desc" },
@@ -150,7 +148,7 @@ export class GeminiService {
                 nightclub,
                 args,
                 requestId,
-                customerPhone, // <-- Passando o JID para disparo de mídia
+                customerPhone,
               );
             }
 
@@ -171,7 +169,6 @@ export class GeminiService {
             }
           }
 
-          // Salva no banco as mensagens
           await prisma.aiMemory.createMany({
             data: [
               { nightclubId, customerPhone, role: "user", content: message },
@@ -248,6 +245,8 @@ export class GeminiService {
     console.log(`[${requestId}] 📝 Criando reserva para ${args.customerName}`);
     try {
       const date = startOfDay(new Date(args.date));
+
+      // 1. Acha o espaço
       const space = await prisma.space.findFirst({
         where: {
           nightclubId,
@@ -256,8 +255,26 @@ export class GeminiService {
         },
       });
       if (!space)
-        return "Erro: Setor inexistente. Verifique os setores disponíveis.";
+        return "Erro: Setor inexistente. Verifique os setores disponíveis com a função get_available_spaces.";
 
+      // 🛑 2. ESCUDO ANTI-OVERBOOKING: Checa se já tem dono naquele dia!
+      const isOccupied = await prisma.reservation.findFirst({
+        where: {
+          nightclubId,
+          spaceId: space.id,
+          date: date,
+          status: { in: ["CONFIRMED", "PENDING"] },
+        },
+      });
+
+      if (isOccupied) {
+        console.warn(
+          `[${requestId}] 🛑 Bloqueado Overbooking! IA tentou reservar o ${space.name} mas já estava ocupado.`,
+        );
+        return `ERRO CRÍTICO: O setor "${space.name}" já foi reservado ou está aguardando pagamento para o dia ${format(date, "dd/MM/yyyy")}. Informe o cliente gentilmente que este setor esgotou e ofereça as outras opções disponíveis (use a função get_available_spaces para ver quais sobraram).`;
+      }
+
+      // Se passou pelo escudo, segue o jogo e cria a reserva
       const customer = await prisma.customer.upsert({
         where: { email: args.customerEmail },
         update: { phone: args.customerPhone, name: args.customerName },
@@ -296,11 +313,8 @@ export class GeminiService {
       const pixCode = pixResponse.data.pixCode;
       const base64Image = pixResponse.data.qrCodeBase64;
 
-      // 🔗 LINK CORRIGIDO COM O .BR
       const checkoutLink = `https://reservasclub.com.br/checkout/${reservation.id}`;
 
-      // 📸 Dispara a imagem do QR Code direto no WhatsApp
-      // Garantimos que a imagem existe e tem tamanho pra ser um base64 real
       if (base64Image && base64Image.length > 50) {
         try {
           const instance = await prisma.whatsappInstance.findFirst({
@@ -309,7 +323,6 @@ export class GeminiService {
           });
 
           if (instance) {
-            // 🛡️ Limpeza do número: Remove o @s.whatsapp.net para a Evolution não cuspir Erro 400
             const safeNumber = customerPhone.replace("@s.whatsapp.net", "");
 
             console.log(
@@ -361,6 +374,8 @@ REGRAS OBRIGATÓRIAS (NÃO QUEBRE SOB HIPÓTESE ALGUMA):
 5. APÓS usar 'get_available_spaces', VOCÊ DEVE RESPONDER O CLIENTE listando as opções que encontrou.
 6. Nas funções, envie as datas sempre no formato AAAA-MM-DD.
 7. Quando o cliente escolher o setor, use 'create_reservation'. Exija nome, email, telefone e o setor desejado ANTES de chamar a função.
-8. APÓS usar 'create_reservation', entregue a resposta informando que o QR Code foi enviado em imagem, mostre o código "Copia e Cola" e envie o Link do Checkout.`;
+8. APÓS usar 'create_reservation', entregue a resposta informando que o QR Code foi enviado em imagem, mostre o código "Copia e Cola" e envie o Link do Checkout.
+9. 🛑 TRAVA ANTI-ALUCINAÇÃO: NUNCA crie uma reserva automaticamente se o cliente enviar apenas uma saudação (ex: "oi", "bom dia").
+10. O histórico contém dados de conversas passadas. SÓ CHAME a função 'create_reservation' se o cliente pedir CLARAMENTE para criar uma NOVA reserva na mensagem atual.`;
   }
 }
