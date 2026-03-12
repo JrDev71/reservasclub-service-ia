@@ -18,20 +18,36 @@ export const handleEvolutionWebhook = async (req: Request, res: Response) => {
 
   try {
     // =======================================================================
-    // 🛰️ NOVA ESCUTA: STATUS DE CONEXÃO (Avisa a Main API)
+    // 🛰️ NOVA ESCUTA: STATUS DE CONEXÃO E RESET DE FALHA
     // =======================================================================
     if (eventName === "connection.update") {
       const status = body.data?.state || body.data?.status;
 
       if (status) {
         console.log(
-          `[Sentinela] Instância ${instanceName} mudou para ${status}. Avisando Main API...`,
+          `[Sentinela] Instância ${instanceName} mudou para ${status}.`,
         );
 
+        let statusFinal = status;
+
+        // 🛑 TRAVA: Se falhou, expirou ou desconectou, matamos o QR Code no banco
+        if (status === "refused" || status === "close") {
+          statusFinal = "DISCONNECTED";
+          console.log(
+            `[Sentinela] Tempo esgotado/Recusado. Limpando QR Code para resetar o botão...`,
+          );
+
+          await prisma.whatsappInstance.update({
+            where: { instanceName },
+            data: { status: "DISCONNECTED", qrCode: null },
+          });
+        }
+
+        // Avisando Main API sobre a mudança de status
         await axios
           .patch(
             `${process.env.MAIN_API_URL}/nightclubs/instance/status`,
-            { instanceName, status },
+            { instanceName, status: statusFinal },
             { headers: { "x-internal-key": process.env.MAIN_API_TOKEN } },
           )
           .catch((err) =>
@@ -41,9 +57,21 @@ export const handleEvolutionWebhook = async (req: Request, res: Response) => {
       return;
     }
 
-    // Se for QR Code, apenas registramos no log por enquanto
+    // =======================================================================
+    // 📱 ESCUTA: RENOVAÇÃO DO QR CODE (A cada 10~15s)
+    // =======================================================================
     if (eventName === "qrcode.updated") {
-      console.log(`[Sentinela] Novo QR Code para a instância: ${instanceName}`);
+      const base64 = body.data?.qrcode?.base64 || body.data?.base64;
+
+      if (base64) {
+        console.log(
+          `[Sentinela] Renovando QR Code no banco para: ${instanceName}`,
+        );
+        await prisma.whatsappInstance.update({
+          where: { instanceName },
+          data: { qrCode: base64, status: "QRCODE" },
+        });
+      }
       return;
     }
 
