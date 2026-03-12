@@ -89,24 +89,36 @@ export class GeminiService {
         return null;
       }
 
-      // 🧠 1. MONTA E IMPRIME O PROMPT DO PAINEL (Para você auditar)
+      // 🧠 1. MONTA E IMPRIME O PROMPT DO PAINEL
       const systemContext = this.buildSystemContext(nightclub);
       console.log(
         `[${requestId}] 🕵️ PROMPT INJETADO NO CÉREBRO DA IA:\n--------------------------------------------------\n${systemContext}\n--------------------------------------------------`,
       );
 
-      // 2. Busca o histórico de conversa limpo
-      const chatHistory = await prisma.aiMemory.findMany({
+      // 2. Busca o histórico recente de forma inteligente (pegando de trás pra frente)
+      const rawHistory = await prisma.aiMemory.findMany({
         where: { nightclubId, customerPhone },
-        orderBy: { createdAt: "asc" },
-        take: 12, // Mantém o contexto das últimas 12 interações
+        orderBy: { createdAt: "desc" }, // Pega as mais recentes primeiro
+        take: 12,
       });
 
-      // Mapeia o histórico usando apenas as regras do Gemini (user e model)
-      const formattedHistory = chatHistory.map((m) => ({
+      // Como pegamos de trás pra frente, inverte o array para voltar à ordem cronológica (história real)
+      rawHistory.reverse();
+
+      // Mapeia para o padrão rigoroso do Gemini
+      let formattedHistory = rawHistory.map((m) => ({
         role: m.role === "assistant" ? "model" : m.role,
         parts: [{ text: m.content }],
       }));
+
+      // 🛡️ BLINDAGEM DE HISTÓRICO: O Gemini dá pau se a primeira mensagem não for do 'user'.
+      // Então, se o histórico começar com 'model', nós cortamos a cabeça da lista até achar um 'user'.
+      while (
+        formattedHistory.length > 0 &&
+        formattedHistory[0].role !== "user"
+      ) {
+        formattedHistory.shift();
+      }
 
       let lastErrorType = "";
 
@@ -114,7 +126,6 @@ export class GeminiService {
         try {
           console.log(`[${requestId}] 🧠 Tentando modelo: ${modelName}`);
 
-          // 🚀 A GRANDE MUDANÇA: systemInstruction em vez de falsificar o histórico
           const model = this.genAI.getGenerativeModel({
             model: modelName,
             systemInstruction: systemContext,
@@ -162,7 +173,7 @@ export class GeminiService {
 
           const responseText = chatResponse.text();
 
-          // Salva no banco para não perder a memória da próxima vez
+          // Salva no banco as mensagens novas
           await prisma.aiMemory.createMany({
             data: [
               { nightclubId, customerPhone, role: "user", content: message },
@@ -207,7 +218,6 @@ export class GeminiService {
     requestId: string,
   ) {
     try {
-      // Garantindo que a data venha formatada corretamente para o banco
       const date = startOfDay(new Date(dateStr));
       const allSpaces = await prisma.space.findMany({
         where: { nightclubId, status: "ACTIVE" },
