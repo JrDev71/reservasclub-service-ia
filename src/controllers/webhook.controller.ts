@@ -6,6 +6,12 @@ import axios from "axios";
 const geminiService = new GeminiService();
 const processedMessages = new Set<string>();
 
+// =======================================================================
+// 🛡️ ESCUDO ANTI-SPAM (Cache em Memória RAM)
+// =======================================================================
+const statusCache = new Map<string, { state: string; time: number }>();
+const lastQrCodeUpdate = new Map<string, number>();
+
 export const handleEvolutionWebhook = async (req: Request, res: Response) => {
   const body = req.body;
   const eventName = String(
@@ -13,7 +19,7 @@ export const handleEvolutionWebhook = async (req: Request, res: Response) => {
   ).toLowerCase();
   const instanceName = body.instance;
 
-  // Responder 200 OK IMEDIATAMENTE para a Evolution não dar timeout
+  // Responder 200 OK IMEDIATAMENTE para a Evolution não dar timeout e parar de spammar
   res.status(200).send("Processing");
 
   try {
@@ -25,67 +31,80 @@ export const handleEvolutionWebhook = async (req: Request, res: Response) => {
         body.data?.state || body.data?.status,
       ).toLowerCase();
 
-      if (status && status !== "undefined") {
+      if (!status || status === "undefined") return;
+
+      // 🛡️ BLOQUEIO DE SPAM: Se a Evolution mandar o mesmo status em menos de 5 segundos, morre aqui!
+      const cached = statusCache.get(instanceName);
+      if (
+        cached &&
+        cached.state === status &&
+        Date.now() - cached.time < 5000
+      ) {
+        return; // Ignora o spam. Poupamos 1 query no banco e 1 requisição HTTP!
+      }
+      // Salva o novo status na memória
+      statusCache.set(instanceName, { state: status, time: Date.now() });
+
+      console.log(
+        `[Sentinela] Instância ${instanceName} mudou para ${status}.`,
+      );
+
+      let statusFinal = status;
+
+      // Puxa a verdade absoluta do banco antes de tomar decisão
+      const currentState = await prisma.whatsappInstance.findUnique({
+        where: { instanceName },
+      });
+
+      // 🛑 TRAVA: Se falhou/expirou (e não estava conectado)
+      if (
+        status === "refused" ||
+        (status === "close" && currentState?.status !== "CONNECTED")
+      ) {
+        statusFinal = "DISCONNECTED";
         console.log(
-          `[Sentinela] Instância ${instanceName} mudou para ${status}.`,
+          `[Sentinela] Tempo esgotado/Recusado. Limpando QR Code para resetar o botão...`,
         );
 
-        let statusFinal = status;
-
-        // Puxa a verdade absoluta do banco antes de tomar decisão
-        const currentState = await prisma.whatsappInstance.findUnique({
+        await prisma.whatsappInstance.update({
           where: { instanceName },
+          data: { status: "DISCONNECTED", qrCode: null },
         });
-
-        // 🛑 TRAVA: Se falhou/expirou (e não estava conectado)
-        if (
-          status === "refused" ||
-          (status === "close" && currentState?.status !== "CONNECTED")
-        ) {
-          statusFinal = "DISCONNECTED";
-          console.log(
-            `[Sentinela] Tempo esgotado/Recusado. Limpando QR Code para resetar o botão...`,
-          );
-
-          await prisma.whatsappInstance.update({
-            where: { instanceName },
-            data: { status: "DISCONNECTED", qrCode: null },
-          });
-        }
-        // ✅ SALVAÇÃO: Se conectou, atualiza na hora e desarma a guilhotina!
-        else if (status === "open" || status === "connected") {
-          statusFinal = "CONNECTED";
-          console.log(
-            `[Sentinela] 🟢 Conexão de sucesso! Atualizando banco para desarmar a guilhotina...`,
-          );
-
-          await prisma.whatsappInstance.update({
-            where: { instanceName },
-            data: { status: "CONNECTED", qrCode: null },
-          });
-        }
-        // 🛡️ BLINDAGEM CONTRA RESTART DO RENDER
-        else if (status === "connecting" || status === "close") {
-          if (currentState?.status === "CONNECTED") {
-            console.log(
-              `[Sentinela] 🛡️ Blindagem Ativa: Instância flutuou (${status}), mas já está CONNECTED. Ocultando da Main API...`,
-            );
-            return; // Morre aqui. Não deixa a Main API estragar o status do painel!
-          }
-          statusFinal = status === "close" ? "DISCONNECTED" : "CONNECTING";
-        }
-
-        // Avisando Main API sobre a mudança de status
-        await axios
-          .patch(
-            `${process.env.MAIN_API_URL}/nightclubs/instance/status`,
-            { instanceName, status: statusFinal },
-            { headers: { "x-internal-key": process.env.MAIN_API_TOKEN } },
-          )
-          .catch((err) =>
-            console.error("❌ Erro ao avisar Main API:", err.message),
-          );
       }
+      // ✅ SALVAÇÃO: Se conectou, atualiza na hora e desarma a guilhotina!
+      else if (status === "open" || status === "connected") {
+        statusFinal = "CONNECTED";
+        console.log(
+          `[Sentinela] 🟢 Conexão de sucesso! Atualizando banco para desarmar a guilhotina...`,
+        );
+
+        await prisma.whatsappInstance.update({
+          where: { instanceName },
+          data: { status: "CONNECTED", qrCode: null },
+        });
+      }
+      // 🛡️ BLINDAGEM CONTRA RESTART DO RENDER
+      else if (status === "connecting" || status === "close") {
+        if (currentState?.status === "CONNECTED") {
+          console.log(
+            `[Sentinela] 🛡️ Blindagem Ativa: Instância flutuou (${status}), mas já está CONNECTED. Ocultando da Main API...`,
+          );
+          return;
+        }
+        statusFinal = status === "close" ? "DISCONNECTED" : "CONNECTING";
+      }
+
+      // Avisando Main API sobre a mudança de status
+      await axios
+        .patch(
+          `${process.env.MAIN_API_URL}/nightclubs/instance/status`,
+          { instanceName, status: statusFinal },
+          { headers: { "x-internal-key": process.env.MAIN_API_TOKEN } },
+        )
+        .catch((err) =>
+          console.error("❌ Erro ao avisar Main API:", err.message),
+        );
+
       return;
     }
 
@@ -93,9 +112,16 @@ export const handleEvolutionWebhook = async (req: Request, res: Response) => {
     // 📱 ESCUTA: RENOVAÇÃO DO QR CODE
     // =======================================================================
     if (eventName === "qrcode.updated") {
+      // 🛡️ BLOQUEIO DE SPAM: Só permite processar 1 QR Code a cada 5 segundos
+      const lastUpdate = lastQrCodeUpdate.get(instanceName) || 0;
+      if (Date.now() - lastUpdate < 5000) return;
+
       const base64 = body.data?.qrcode?.base64 || body.data?.base64;
 
       if (base64) {
+        // Renova o tempo na memória
+        lastQrCodeUpdate.set(instanceName, Date.now());
+
         const checkInstance = await prisma.whatsappInstance.findUnique({
           where: { instanceName },
         });
@@ -153,7 +179,6 @@ export const handleEvolutionWebhook = async (req: Request, res: Response) => {
 
     // =======================================================================
     // 🩹 AUTO-CURA DO BANCO DE DADOS
-    // Se recebemos mensagem, estamos conectados. Vamos garantir que o painel saiba!
     // =======================================================================
     if (whatsappInstance.status !== "CONNECTED") {
       console.log(
@@ -178,7 +203,7 @@ export const handleEvolutionWebhook = async (req: Request, res: Response) => {
 
     if (!aiAgent || aiAgent.isActive === false) {
       console.log(
-        `[Webhook] 😴 Robô OFF para ${instanceName}. Mensagem ignorada (Atendimento Humano).`,
+        `[Webhook] 😴 Robô OFF para ${instanceName}. Mensagem ignorada.`,
       );
       return;
     }
