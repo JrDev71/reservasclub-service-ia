@@ -10,7 +10,7 @@ import {
 } from "../services/evolution.service";
 
 // ============================================================================
-// 🪓 FUNÇÃO AUXILIAR: A VOADORA DE LOGOUT (MATA A SESSÃO ZUMBI)
+// ☢️ FUNÇÃO AUXILIAR: A BOMBA ATÔMICA (ANQUILA A SESSÃO ZUMBI)
 // ============================================================================
 const forcarDesconexao = async (instanceName: string) => {
   try {
@@ -19,21 +19,43 @@ const forcarDesconexao = async (instanceName: string) => {
     const EVOLUTION_API_KEY = process.env.EVOLUTION_API_KEY || "";
 
     console.log(
-      `\n[Instance] 🪓 Forçando Logout na Evolution para: ${instanceName}`,
+      `\n[Instance] ☢️ BOMBA ATÔMICA: Deletando a instância na Evolution: ${instanceName}`,
     );
-    await axios.delete(`${EVOLUTION_API_URL}/instance/logout/${instanceName}`, {
+
+    // 1. Apaga a instância, o cache e a pasta interna do Baileys na Evolution
+    await axios.delete(`${EVOLUTION_API_URL}/instance/delete/${instanceName}`, {
       headers: { apikey: EVOLUTION_API_KEY },
-      timeout: 5000,
+      timeout: 8000,
     });
 
     console.log(
-      `[Instance] ⏳ Aguardando 3 segundos pro Baileys dropar a conexão...`,
+      `[Instance] 🧹 Instância vaporizada. Aguardando a poeira baixar (2s)...`,
     );
-    await new Promise((resolve) => setTimeout(resolve, 3000));
-  } catch (error: any) {
+    await new Promise((resolve) => setTimeout(resolve, 2000));
+
     console.log(
-      `[Instance] ⚠️ Logout ignorado pela API (a instância já deve estar morta). Seguindo...`,
+      `[Instance] 🏗️ Recriando a instância com a mente 100% limpa...`,
     );
+    // 2. Recria a instância zerada
+    await criarInstancia(instanceName);
+  } catch (error: any) {
+    // Se der 404, a instância já não existia. Apenas criamos uma nova.
+    if (error.response?.status === 404) {
+      console.log(`[Instance] 🤷‍♂️ A instância não existia. Criando uma nova...`);
+      try {
+        await criarInstancia(instanceName);
+      } catch (createError: any) {
+        console.log(
+          `[Instance] ❌ Erro ao criar instância (Plano B):`,
+          createError.message,
+        );
+      }
+    } else {
+      console.log(
+        `[Instance] ⚠️ Detalhe na Bomba Atômica:`,
+        error.response?.data || error.message,
+      );
+    }
   }
 };
 
@@ -52,7 +74,7 @@ const iniciarCronometroCancelamento = (instanceName: string) => {
         (instancia.status === "QRCODE" || instancia.status === "CONNECTING")
       ) {
         console.log(
-          `[Timer] ⏰ 45 segundos passaram. Conexão não concluída para ${instanceName}. Abortando...`,
+          `[Timer] ⏰ 45s passaram. Conexão não concluída para ${instanceName}.`,
         );
 
         await abortarConexaoInstancia(instanceName);
@@ -63,7 +85,7 @@ const iniciarCronometroCancelamento = (instanceName: string) => {
         });
 
         console.log(
-          `[Timer] 🛑 Instância ${instanceName} resetada para DISCONNECTED.`,
+          `[Timer] 🛑 Instância ${instanceName} resetada para DISCONNECTED no banco.`,
         );
       }
     } catch (error: any) {
@@ -121,27 +143,9 @@ export const createNightclubInstance = async (req: Request, res: Response) => {
 
     iniciarCronometroCancelamento(instanceName);
 
-    return res.status(200).json({
-      success: true,
-      instance: whatsappInstance,
-    });
+    return res.status(200).json({ success: true, instance: whatsappInstance });
   } catch (error: any) {
     console.error("[Instance Controller Error]", error.message || error);
-
-    const errorData = error.response?.data || {};
-    const errorStr = JSON.stringify(errorData).toLowerCase();
-
-    if (
-      error.response?.status === 409 ||
-      (error.response?.status === 403 && errorStr.includes("already in use")) ||
-      error.message?.includes("already exists")
-    ) {
-      console.log(
-        `[Instance] Instância já existe. Avisando backend principal para fazer fallback...`,
-      );
-      return res.status(409).json({ error: "Instância já existe." });
-    }
-
     return res.status(500).json({ error: "Erro ao criar a instância." });
   }
 };
@@ -165,10 +169,10 @@ export const connectNightclubInstance = async (req: Request, res: Response) => {
 
     const instanceName = `balada_${nightclub.slug}`;
     console.log(
-      `\n[Instance] 🔄 Inciando Fluxo de QR Code para: ${instanceName}`,
+      `\n[Instance] 🔄 Iniciando Fluxo de QR Code para: ${instanceName}`,
     );
 
-    // 🪓 Força o logout e limpa o cache da Evolution ANTES de pedir conexão
+    // ☢️ Limpa o terreno matando qualquer zumbi
     await forcarDesconexao(instanceName);
 
     const webhookUrl =
@@ -184,10 +188,7 @@ export const connectNightclubInstance = async (req: Request, res: Response) => {
 
     const whatsappInstance = await prisma.whatsappInstance.upsert({
       where: { instanceName },
-      update: {
-        status: initialStatus,
-        qrCode: qrCodeBase64,
-      },
+      update: { status: initialStatus, qrCode: qrCodeBase64 },
       create: {
         instanceName,
         nightclubId: nightclub.id,
@@ -198,10 +199,7 @@ export const connectNightclubInstance = async (req: Request, res: Response) => {
 
     iniciarCronometroCancelamento(instanceName);
 
-    return res.status(200).json({
-      success: true,
-      instance: whatsappInstance,
-    });
+    return res.status(200).json({ success: true, instance: whatsappInstance });
   } catch (error: any) {
     console.error("[Instance Connect Error]", error.message || error);
     return res
@@ -220,7 +218,7 @@ export const connectNightclubWithCode = async (req: Request, res: Response) => {
     if (!nightclubId || !number)
       return res
         .status(400)
-        .json({ error: "ID da balada e número do celular são obrigatórios." });
+        .json({ error: "ID da balada e número são obrigatórios." });
 
     const nightclub = await prisma.nightclub.findUnique({
       where: { id: nightclubId as string },
@@ -231,10 +229,10 @@ export const connectNightclubWithCode = async (req: Request, res: Response) => {
 
     const instanceName = `balada_${nightclub.slug}`;
     console.log(
-      `\n[Instance] 🔢 Inciando Pairing Code para: ${instanceName} / Número: ${number}`,
+      `\n[Instance] 🔢 Iniciando Pairing Code para: ${instanceName} / Número: ${number}`,
     );
 
-    // 🪓 Força o logout e limpa o cache da Evolution ANTES de pedir o código numérico
+    // ☢️ Limpa o terreno matando qualquer zumbi antes de pedir código
     await forcarDesconexao(instanceName);
 
     const webhookUrl =
@@ -242,6 +240,7 @@ export const connectNightclubWithCode = async (req: Request, res: Response) => {
       "http://host.docker.internal:3001/evolution/webhook";
     await configurarWebhook(instanceName, webhookUrl);
 
+    // Agora o Baileys não tem como dar desculpa, a instância acabou de nascer!
     const evolutionResponse = await conectarInstanciaComCodigo(
       instanceName,
       number,
@@ -252,17 +251,6 @@ export const connectNightclubWithCode = async (req: Request, res: Response) => {
       JSON.stringify(evolutionResponse),
     );
 
-    // Como já forçamos o logout lá em cima, se a Evolution ainda disser que tá "open",
-    // é porque a API dela engasgou pesado. Vamos barrar e pedir pra tentar de novo.
-    if (
-      evolutionResponse?.instance?.state === "open" ||
-      evolutionResponse?.state === "open"
-    ) {
-      throw new Error(
-        "A Evolution travou a sessão no estado 'open'. O cache está sendo limpo. Tente gerar novamente em 5 segundos.",
-      );
-    }
-
     const pairingCode =
       evolutionResponse?.code ||
       evolutionResponse?.pairingCode ||
@@ -270,10 +258,10 @@ export const connectNightclubWithCode = async (req: Request, res: Response) => {
 
     if (!pairingCode) {
       console.error(
-        `[CRÍTICO] Evolution não devolveu o código. Resposta salva acima.`,
+        `[CRÍTICO] Evolution não devolveu o código. A resposta está salva acima.`,
       );
       throw new Error(
-        "Evolution não retornou o código de pareamento. Verifique se o número possui WhatsApp ativo.",
+        "Evolution não retornou o código de pareamento. Verifique se o número possui WhatsApp ativo e se o DDD está correto.",
       );
     }
 
@@ -292,16 +280,13 @@ export const connectNightclubWithCode = async (req: Request, res: Response) => {
 
     console.log(`[Instance] ✅ Código de Pareamento gerado: ${pairingCode}`);
 
-    return res.status(200).json({
-      success: true,
-      code: pairingCode,
-    });
+    return res.status(200).json({ success: true, code: pairingCode });
   } catch (error: any) {
     console.error("[Instance Connect Code Error]", error.message || error);
     return res.status(500).json({
       error:
         error.message ||
-        "Erro ao gerar código de pareamento. Verifique o console do servidor.",
+        "Erro ao gerar código de pareamento. Verifique o console.",
     });
   }
 };
