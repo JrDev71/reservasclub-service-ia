@@ -167,10 +167,8 @@ export const connectNightclubInstance = async (req: Request, res: Response) => {
       `\n[Instance] 🔄 Iniciando Fluxo de QR Code para: ${instanceName}`,
     );
 
-    // 1. Explode a instância se ela estiver zumbi
     await forcarDesconexao(instanceName);
 
-    // 2. Constrói ela de novo (se a bomba tiver deletado ela)
     try {
       console.log(`[Instance] 🏗️ Reconstruindo a instância na Evolution...`);
       await criarInstancia(instanceName);
@@ -234,10 +232,8 @@ export const connectNightclubWithCode = async (req: Request, res: Response) => {
       `\n[Instance] 🔢 Iniciando Pairing Code para: ${instanceName} / Número: ${number}`,
     );
 
-    // 1. Explode a instância se ela estiver zumbi
     await forcarDesconexao(instanceName);
 
-    // 2. Constrói ela de novo (se a bomba tiver deletado ela com sucesso)
     try {
       console.log(`[Instance] 🏗️ Reconstruindo a instância na Evolution...`);
       await criarInstancia(instanceName);
@@ -271,12 +267,24 @@ export const connectNightclubWithCode = async (req: Request, res: Response) => {
       );
     }
 
-    const pairingCode =
-      evolutionResponse?.code ||
+    // 🛑 A SOLUÇÃO: Pega o pairingCode PRIMEIRO!
+    let pairingCode =
       evolutionResponse?.pairingCode ||
       evolutionResponse?.pairingCodeResponse?.code;
 
+    // Se ele não achou o pairingCode, mas existe a propriedade 'code' com tamanho pequeno (8 dígitos), aí ele usa.
+    if (
+      !pairingCode &&
+      evolutionResponse?.code &&
+      evolutionResponse.code.length < 20
+    ) {
+      pairingCode = evolutionResponse.code;
+    }
+
     if (!pairingCode) {
+      console.error(
+        `[CRÍTICO] A Evolution devolveu a matriz do QR Code mas escondeu os 8 dígitos!`,
+      );
       throw new Error(
         "Evolution não retornou o código de pareamento. Verifique se o número possui WhatsApp ativo e se o DDD está correto.",
       );
