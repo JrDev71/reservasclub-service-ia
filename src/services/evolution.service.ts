@@ -77,6 +77,13 @@ export const conectarInstanciaComCodigo = async (
 
     const response = await evolutionClient.get(
       `/instance/connect/${instanceName}?number=${cleanNumber}`,
+      {
+        headers: {
+          "Content-Type": "application/json",
+          // Trava tática para forçar a API a focar no Pairing Code e ignorar o QR Code visual
+          reject_qrcode: "true",
+        },
+      },
     );
 
     return response.data;
