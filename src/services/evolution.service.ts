@@ -15,21 +15,27 @@ const evolutionClient = axios.create({
   },
 });
 
-export const criarInstancia = async (instanceName: string) => {
+export const criarInstancia = async (
+  instanceName: string,
+  numberForPairing?: string,
+) => {
   try {
-    console.log(
-      `[DEBUG Evolution] URL recebida do .env: "${EVOLUTION_API_URL}"`,
-    );
-    console.log(
-      `[DEBUG Evolution] KEY recebida do .env: "${EVOLUTION_API_KEY}"`,
-    );
+    console.log(`[DEBUG Evolution] URL recebida: "${EVOLUTION_API_URL}"`);
     console.log(`[DEBUG Evolution] Tentando criar instância: ${instanceName}`);
 
-    const response = await evolutionClient.post("/instance/create", {
+    const payload: any = {
       instanceName: instanceName,
-      qrcode: true,
+      qrcode: !numberForPairing, // Se enviou número, arranca o QR Code na raiz!
       integration: "WHATSAPP-BAILEYS",
-    });
+    };
+
+    // O pulo do gato: já mandar o número e a flag na criação
+    if (numberForPairing) {
+      payload.number = numberForPairing.replace(/\D/g, "");
+      payload.pairingCode = true;
+    }
+
+    const response = await evolutionClient.post("/instance/create", payload);
     return response.data;
   } catch (error: any) {
     console.error(
@@ -45,11 +51,9 @@ export const conectarInstancia = async (instanceName: string) => {
     console.log(
       `[DEBUG Evolution] Solicitando reconexão/QR Code para: ${instanceName}`,
     );
-
     const response = await evolutionClient.get(
       `/instance/connect/${instanceName}`,
     );
-
     return response.data;
   } catch (error: any) {
     console.error(
@@ -68,21 +72,37 @@ export const conectarInstanciaComCodigo = async (
   number: string,
 ) => {
   try {
-    // Limpa qualquer máscara do número antes de enviar para a Evolution
     const cleanNumber = number.replace(/\D/g, "");
-
     console.log(
-      `[DEBUG Evolution] Solicitando Código de Pareamento para: ${instanceName} / Número: ${cleanNumber}`,
+      `[DEBUG Evolution] Solicitando Pairing Code para: ${instanceName} / Número: ${cleanNumber}`,
     );
 
-    const response = await evolutionClient.get(
-      `/instance/connect/${instanceName}?number=${cleanNumber}`,
-      {
-        headers: {
-          "Content-Type": "application/json",
-          // Trava tática para forçar a API a focar no Pairing Code e ignorar o QR Code visual
-          reject_qrcode: "true",
+    // Tentativa 1: Via Rota Específica GET com query e header
+    try {
+      const responseNovo = await evolutionClient.get(
+        `/instance/connect/${instanceName}?number=${cleanNumber}`,
+        {
+          headers: {
+            "Content-Type": "application/json",
+            reject_qrcode: "true",
+          },
         },
+      );
+      if (responseNovo.data?.code || responseNovo.data?.pairingCode) {
+        return responseNovo.data;
+      }
+    } catch (e) {
+      console.log(
+        "[DEBUG Evolution] Rota GET /connect não retornou o código, tentando POST de configuração...",
+      );
+    }
+
+    // Tentativa 2: Via POST Payload de Configuração (Algumas versões exigem assim)
+    const response = await evolutionClient.post(
+      `/instance/connect/${instanceName}`,
+      {
+        number: cleanNumber,
+        pairingCode: true,
       },
     );
 
@@ -144,12 +164,7 @@ export const enviarMensagemWhatsApp = async (
   try {
     const response = await evolutionClient.post(
       `/message/sendText/${instanceName}`,
-      {
-        number: number,
-        text: text,
-        delay: 1200,
-        linkPreview: false,
-      },
+      { number: number, text: text, delay: 1200, linkPreview: false },
     );
     return response.data;
   } catch (error: any) {
@@ -170,7 +185,6 @@ export const enviarMediaWhatsApp = async (
     const mediaFormatada = base64Data.includes("base64,")
       ? base64Data
       : `data:image/png;base64,${base64Data}`;
-
     const response = await evolutionClient.post(
       `/message/sendMedia/${instanceName}`,
       {

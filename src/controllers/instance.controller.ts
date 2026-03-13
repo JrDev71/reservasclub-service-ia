@@ -235,8 +235,11 @@ export const connectNightclubWithCode = async (req: Request, res: Response) => {
     await forcarDesconexao(instanceName);
 
     try {
-      console.log(`[Instance] 🏗️ Reconstruindo a instância na Evolution...`);
-      await criarInstancia(instanceName);
+      console.log(
+        `[Instance] 🏗️ Reconstruindo a instância JÁ COM O NÚMERO NA RAIZ...`,
+      );
+      // ⬇️ A MÁGICA ACONTECE AQUI ⬇️
+      await criarInstancia(instanceName, number);
     } catch (e: any) {
       console.log(
         `[Instance] ℹ️ Aviso (ignorável): Instância já existia. Seguindo...`,
@@ -267,18 +270,14 @@ export const connectNightclubWithCode = async (req: Request, res: Response) => {
       );
     }
 
-    // 🛑 A SOLUÇÃO: Pega o pairingCode PRIMEIRO!
     let pairingCode =
       evolutionResponse?.pairingCode ||
-      evolutionResponse?.pairingCodeResponse?.code;
+      evolutionResponse?.pairingCodeResponse?.code ||
+      evolutionResponse?.code;
 
-    // Se ele não achou o pairingCode, mas existe a propriedade 'code' com tamanho pequeno (8 dígitos), aí ele usa.
-    if (
-      !pairingCode &&
-      evolutionResponse?.code &&
-      evolutionResponse.code.length < 20
-    ) {
-      pairingCode = evolutionResponse.code;
+    // A trava de segurança contra o texto do QR Code
+    if (pairingCode && pairingCode.length > 15) {
+      pairingCode = null;
     }
 
     if (!pairingCode) {
