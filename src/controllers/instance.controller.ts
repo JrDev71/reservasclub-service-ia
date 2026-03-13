@@ -30,11 +30,10 @@ const forcarDesconexao = async (instanceName: string) => {
     );
     await new Promise((resolve) => setTimeout(resolve, 2000));
   } catch (error: any) {
-    const errorData = error.response?.data;
-
-    console.log(`\n[Instance] ⚠️ O Delete falhou. Raio-X do Erro 400:`);
-    // O segredo pra abrir o [object Object] safado e ver as regras:
-    console.log(JSON.stringify(errorData, null, 2));
+    console.log(
+      `\n[Instance] ⚠️ O Delete falhou. Raio-X do Erro:`,
+      JSON.stringify(error.response?.data || error.message, null, 2),
+    );
 
     try {
       console.log(`\n[Instance] 🪓 2. Tentando Logout normal como Plano B...`);
@@ -53,8 +52,7 @@ const forcarDesconexao = async (instanceName: string) => {
     }
   }
 
-  // Dá um respiro pro Baileys tentar se recuperar antes de prosseguirmos
-  await new Promise((resolve) => setTimeout(resolve, 3000));
+  await new Promise((resolve) => setTimeout(resolve, 2000));
 };
 
 // ============================================================================
@@ -161,7 +159,6 @@ export const connectNightclubInstance = async (req: Request, res: Response) => {
     const nightclub = await prisma.nightclub.findUnique({
       where: { id: nightclubId as string },
     });
-
     if (!nightclub)
       return res.status(404).json({ error: "Balada não encontrada." });
 
@@ -170,7 +167,18 @@ export const connectNightclubInstance = async (req: Request, res: Response) => {
       `\n[Instance] 🔄 Iniciando Fluxo de QR Code para: ${instanceName}`,
     );
 
+    // 1. Explode a instância se ela estiver zumbi
     await forcarDesconexao(instanceName);
+
+    // 2. Constrói ela de novo (se a bomba tiver deletado ela)
+    try {
+      console.log(`[Instance] 🏗️ Reconstruindo a instância na Evolution...`);
+      await criarInstancia(instanceName);
+    } catch (e: any) {
+      console.log(
+        `[Instance] ℹ️ Aviso (ignorável): Instância já existia. Seguindo...`,
+      );
+    }
 
     const webhookUrl =
       process.env.WEBHOOK_URL ||
@@ -213,14 +221,11 @@ export const connectNightclubWithCode = async (req: Request, res: Response) => {
     const { nightclubId, number } = req.body;
 
     if (!nightclubId || !number)
-      return res
-        .status(400)
-        .json({ error: "ID da balada e número são obrigatórios." });
+      return res.status(400).json({ error: "ID e número são obrigatórios." });
 
     const nightclub = await prisma.nightclub.findUnique({
       where: { id: nightclubId as string },
     });
-
     if (!nightclub)
       return res.status(404).json({ error: "Balada não encontrada." });
 
@@ -229,7 +234,18 @@ export const connectNightclubWithCode = async (req: Request, res: Response) => {
       `\n[Instance] 🔢 Iniciando Pairing Code para: ${instanceName} / Número: ${number}`,
     );
 
+    // 1. Explode a instância se ela estiver zumbi
     await forcarDesconexao(instanceName);
+
+    // 2. Constrói ela de novo (se a bomba tiver deletado ela com sucesso)
+    try {
+      console.log(`[Instance] 🏗️ Reconstruindo a instância na Evolution...`);
+      await criarInstancia(instanceName);
+    } catch (e: any) {
+      console.log(
+        `[Instance] ℹ️ Aviso (ignorável): Instância já existia. Seguindo...`,
+      );
+    }
 
     const webhookUrl =
       process.env.WEBHOOK_URL ||
@@ -261,9 +277,6 @@ export const connectNightclubWithCode = async (req: Request, res: Response) => {
       evolutionResponse?.pairingCodeResponse?.code;
 
     if (!pairingCode) {
-      console.error(
-        `[CRÍTICO] Evolution não devolveu o código. A resposta está salva acima.`,
-      );
       throw new Error(
         "Evolution não retornou o código de pareamento. Verifique se o número possui WhatsApp ativo e se o DDD está correto.",
       );
