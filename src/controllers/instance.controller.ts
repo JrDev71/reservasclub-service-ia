@@ -10,7 +10,7 @@ import {
 } from "../services/evolution.service";
 
 // ============================================================================
-// 🪓 FUNÇÃO AUXILIAR: A VOADORA DE LOGOUT (RAIO-X DE ERRO ATIVADO)
+// 🪓 FUNÇÃO AUXILIAR: A VOADORA DE LOGOUT (DETALHADA - ORIGINAL)
 // ============================================================================
 const forcarDesconexao = async (instanceName: string) => {
   const EVOLUTION_API_URL =
@@ -19,44 +19,70 @@ const forcarDesconexao = async (instanceName: string) => {
 
   try {
     console.log(
-      `\n[Instance] ☢️ 1. Tentando Deletar a instância fantasma na Evolution: ${instanceName}`,
+      `\n[Instance] 🪓 1. Tentando Logout normal na Evolution: ${instanceName}`,
     );
-    await axios.delete(`${EVOLUTION_API_URL}/instance/delete/${instanceName}`, {
+    await axios.delete(`${EVOLUTION_API_URL}/instance/logout/${instanceName}`, {
       headers: { apikey: EVOLUTION_API_KEY },
       timeout: 5000,
     });
-    console.log(
-      `[Instance] ✅ Instância deletada com sucesso. Aguardando 2s...`,
-    );
-    await new Promise((resolve) => setTimeout(resolve, 2000));
+    console.log(`[Instance] ✅ Logout normal funcionou.`);
   } catch (error: any) {
+    const data = error.response?.data;
     console.log(
-      `\n[Instance] ⚠️ O Delete falhou. Raio-X do Erro:`,
-      JSON.stringify(error.response?.data || error.message, null, 2),
+      `[Instance] ⚠️ Logout normal falhou. Motivo real:`,
+      JSON.stringify(data, null, 2),
     );
 
     try {
-      console.log(`\n[Instance] 🪓 2. Tentando Logout normal como Plano B...`);
+      console.log(`\n[Instance] 🪓 2. Tentando Logout Forçado com payload...`);
       await axios.delete(
         `${EVOLUTION_API_URL}/instance/logout/${instanceName}`,
         {
-          headers: { apikey: EVOLUTION_API_KEY },
+          headers: {
+            apikey: EVOLUTION_API_KEY,
+            "Content-Type": "application/json",
+          },
+          data: { instanceName, force: true },
           timeout: 5000,
         },
       );
-      console.log(`[Instance] ✅ Logout normal funcionou.`);
+      console.log(`[Instance] ✅ Logout Forçado funcionou.`);
     } catch (e2: any) {
       console.log(
-        `[Instance] ⚠️ Logout normal também falhou. Motivo: ${e2.response?.data?.error || e2.message}`,
+        `[Instance] ⚠️ Logout Forçado falhou. Motivo:`,
+        JSON.stringify(e2.response?.data, null, 2),
       );
     }
   }
 
-  await new Promise((resolve) => setTimeout(resolve, 2000));
+  // 🔄 RESTART SALVADOR: Reinicia o motor do Baileys pra ele acordar pra vida e derrubar o Zumbi
+  try {
+    console.log(
+      `\n[Instance] 🔄 3. Reiniciando a instância no servidor para limpar cache...`,
+    );
+    await axios.put(
+      `${EVOLUTION_API_URL}/instance/restart/${instanceName}`,
+      {},
+      {
+        headers: { apikey: EVOLUTION_API_KEY },
+        timeout: 5000,
+      },
+    );
+    console.log(
+      `[Instance] ✅ Restart enviado. Aguardando 3s pro motor reiniciar limpo...`,
+    );
+  } catch (e3: any) {
+    console.log(
+      `[Instance] ⚠️ Restart falhou. Motivo:`,
+      JSON.stringify(e3.response?.data, null, 2),
+    );
+  }
+
+  await new Promise((resolve) => setTimeout(resolve, 3000));
 };
 
 // ============================================================================
-// 🕰️ FUNÇÃO AUXILIAR: A GUILHOTINA DE 45 SEGUNDOS
+// 🕰️ FUNÇÃO AUXILIAR: A GUILHOTINA DE 45 SEGUNDOS (ORIGINAL)
 // ============================================================================
 const iniciarCronometroCancelamento = (instanceName: string) => {
   setTimeout(async () => {
@@ -72,14 +98,11 @@ const iniciarCronometroCancelamento = (instanceName: string) => {
         console.log(
           `[Timer] ⏰ 45s passaram. Conexão não concluída para ${instanceName}.`,
         );
-
         await abortarConexaoInstancia(instanceName);
-
         await prisma.whatsappInstance.update({
           where: { instanceName },
           data: { status: "DISCONNECTED", qrCode: null },
         });
-
         console.log(
           `[Timer] 🛑 Instância ${instanceName} resetada para DISCONNECTED no banco.`,
         );
@@ -99,13 +122,11 @@ const iniciarCronometroCancelamento = (instanceName: string) => {
 export const createNightclubInstance = async (req: Request, res: Response) => {
   try {
     const { nightclubId } = req.body;
-
     if (!nightclubId) return res.status(400).json({ error: "ID obrigatório." });
 
     const nightclub = await prisma.nightclub.findUnique({
       where: { id: nightclubId as string },
     });
-
     if (!nightclub)
       return res.status(404).json({ error: "Balada não encontrada." });
 
@@ -152,9 +173,7 @@ export const createNightclubInstance = async (req: Request, res: Response) => {
 export const connectNightclubInstance = async (req: Request, res: Response) => {
   try {
     const { nightclubId } = req.params;
-
-    if (!nightclubId)
-      return res.status(400).json({ error: "ID obrigatório na URL." });
+    if (!nightclubId) return res.status(400).json({ error: "ID obrigatório." });
 
     const nightclub = await prisma.nightclub.findUnique({
       where: { id: nightclubId as string },
@@ -168,15 +187,6 @@ export const connectNightclubInstance = async (req: Request, res: Response) => {
     );
 
     await forcarDesconexao(instanceName);
-
-    try {
-      console.log(`[Instance] 🏗️ Reconstruindo a instância na Evolution...`);
-      await criarInstancia(instanceName);
-    } catch (e: any) {
-      console.log(
-        `[Instance] ℹ️ Aviso (ignorável): Instância já existia. Seguindo...`,
-      );
-    }
 
     const webhookUrl =
       process.env.WEBHOOK_URL ||
@@ -217,7 +227,6 @@ export const connectNightclubInstance = async (req: Request, res: Response) => {
 export const connectNightclubWithCode = async (req: Request, res: Response) => {
   try {
     const { nightclubId, number } = req.body;
-
     if (!nightclubId || !number)
       return res.status(400).json({ error: "ID e número são obrigatórios." });
 
@@ -234,18 +243,6 @@ export const connectNightclubWithCode = async (req: Request, res: Response) => {
 
     await forcarDesconexao(instanceName);
 
-    try {
-      console.log(
-        `[Instance] 🏗️ Reconstruindo a instância JÁ COM O NÚMERO NA RAIZ...`,
-      );
-      // ⬇️ A MÁGICA ACONTECE AQUI ⬇️
-      await criarInstancia(instanceName, number);
-    } catch (e: any) {
-      console.log(
-        `[Instance] ℹ️ Aviso (ignorável): Instância já existia. Seguindo...`,
-      );
-    }
-
     const webhookUrl =
       process.env.WEBHOOK_URL ||
       "http://host.docker.internal:3001/evolution/webhook";
@@ -255,7 +252,6 @@ export const connectNightclubWithCode = async (req: Request, res: Response) => {
       instanceName,
       number,
     );
-
     console.log(
       `[DEBUG] Resposta Bruta da Evolution:`,
       JSON.stringify(evolutionResponse),
@@ -270,14 +266,18 @@ export const connectNightclubWithCode = async (req: Request, res: Response) => {
       );
     }
 
+    // 🛑 A SOLUÇÃO: Pega o pairingCode PRIMEIRO!
     let pairingCode =
       evolutionResponse?.pairingCode ||
-      evolutionResponse?.pairingCodeResponse?.code ||
-      evolutionResponse?.code;
+      evolutionResponse?.pairingCodeResponse?.code;
 
-    // A trava de segurança contra o texto do QR Code
-    if (pairingCode && pairingCode.length > 15) {
-      pairingCode = null;
+    // Se ele não achou o pairingCode, mas existe a propriedade 'code' com tamanho pequeno (8 dígitos), aí ele usa.
+    if (
+      !pairingCode &&
+      evolutionResponse?.code &&
+      evolutionResponse.code.length < 20
+    ) {
+      pairingCode = evolutionResponse.code;
     }
 
     if (!pairingCode) {

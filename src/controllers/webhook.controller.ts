@@ -100,6 +100,14 @@ export const handleEvolutionWebhook = async (req: Request, res: Response) => {
           where: { instanceName },
         });
 
+        // 🛑 TRAVA DE OURO: Ignora o QR Code se o cara estiver gerando o Pairing Code!
+        if (checkInstance && checkInstance.status === "CONNECTING") {
+          console.log(
+            `[Sentinela] 🛡️ Ignorando QR Code de fundo. O usuário está no fluxo de Pairing Code.`,
+          );
+          return;
+        }
+
         if (checkInstance && checkInstance.status !== "CONNECTED") {
           console.log(
             `[Sentinela] Renovando QR Code no banco para: ${instanceName}`,
