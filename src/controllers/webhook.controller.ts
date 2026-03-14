@@ -2,6 +2,8 @@ import { Request, Response } from "express";
 import { prisma } from "../lib/prisma";
 import { GeminiService } from "../services/gemini.service";
 import axios from "axios";
+// 👈 Adicionada a importação para o envio de imagens
+import { enviarMediaWhatsApp } from "../services/evolution.service";
 
 const geminiService = new GeminiService();
 const processedMessages = new Set<string>();
@@ -218,9 +220,56 @@ export const handleEvolutionWebhook = async (req: Request, res: Response) => {
       textMessage,
     );
 
+    // =======================================================================
+    // 📩 ENVIO DA RESPOSTA E INTERCEPTAÇÃO DE MÍDIA
+    // =======================================================================
     if (aiResponse) {
-      const formattedResponse = formatForWhatsApp(aiResponse);
-      await sendToWhatsApp(instanceName, customerJid, formattedResponse);
+      // 1. Verifica se a IA acionou a tag para enviar o mapa
+      const requiresMap = aiResponse.includes("[ENVIAR_MAPA]");
+
+      // 2. Remove a tag para não aparecer no WhatsApp do cliente
+      let finalResponse = aiResponse;
+      if (requiresMap) {
+        finalResponse = aiResponse.replace("[ENVIAR_MAPA]", "").trim();
+      }
+
+      // 3. Envia o texto da resposta normalmente
+      if (finalResponse.length > 0) {
+        const formattedResponse = formatForWhatsApp(finalResponse);
+        await sendToWhatsApp(instanceName, customerJid, formattedResponse);
+      }
+
+      // 4. Se a tag foi ativada, puxa a foto e dispara logo em seguida
+      if (requiresMap) {
+        const fotoMapaUrl = whatsappInstance.nightclub?.mapUrl;
+
+        if (fotoMapaUrl) {
+          console.log(
+            `[Webhook] 🗺️ IA acionou gatilho de Mapa para ${customerJid}! Enviando imagem...`,
+          );
+
+          // Aguarda um pouquinho para a foto chegar logo após o texto
+          setTimeout(async () => {
+            await enviarMediaWhatsApp(
+              instanceName,
+              customerJid,
+              fotoMapaUrl,
+              "📍 Mapa de Setores - UP Bar",
+            );
+          }, 1500);
+        } else {
+          console.log(
+            `[Webhook] ⚠️ Gatilho de mapa acionado, mas 'mapUrl' está vazio no banco de dados.`,
+          );
+
+          // Avisa o cliente educadamente que o sistema não tem a foto ainda
+          const msgSemMapa =
+            "Poxa, peço desculpas, mas no momento estou sem a foto do nosso mapa por aqui! 😕 Mas posso te explicar como funcionam os setores, qual você prefere?";
+          setTimeout(async () => {
+            await sendToWhatsApp(instanceName, customerJid, msgSemMapa);
+          }, 1500);
+        }
+      }
     }
   } catch (error: any) {
     console.error("❌ [Webhook Error]:", error.message);
