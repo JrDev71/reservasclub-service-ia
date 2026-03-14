@@ -178,19 +178,30 @@ export const enviarMensagemWhatsApp = async (
 export const enviarMediaWhatsApp = async (
   instanceName: string,
   number: string,
-  base64Data: string,
+  mediaData: string,
   caption: string = "",
 ) => {
   try {
-    const mediaFormatada = base64Data.includes("base64,")
-      ? base64Data
-      : `data:image/png;base64,${base64Data}`;
+    let mediaFormatada = mediaData;
+
+    // 1. Verifica se é um LINK de internet (URL)
+    const isUrl =
+      mediaData.startsWith("http://") || mediaData.startsWith("https://");
+
+    // 2. Se NÃO for URL, significa que é Base64. A gente garante que tem o prefixo correto.
+    if (!isUrl) {
+      mediaFormatada = mediaData.includes("base64,")
+        ? mediaData
+        : `data:image/png;base64,${mediaData}`;
+    }
+
     const response = await evolutionClient.post(
       `/message/sendMedia/${instanceName}`,
       {
         number: number,
         mediatype: "image",
-        mimetype: "image/png",
+        // Só usamos o mimetype se formos mandar um arquivo base64, se for URL, a Evolution deduz sozinha
+        ...(isUrl ? {} : { mimetype: "image/png" }),
         caption: caption,
         media: mediaFormatada,
         delay: 1500,
