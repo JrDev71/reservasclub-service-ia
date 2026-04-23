@@ -1,10 +1,12 @@
 import { GoogleGenerativeAI } from "@google/generative-ai";
 import axios from "axios";
 import { prisma } from "../lib/prisma";
-import { startOfDay, format } from "date-fns";
+import { buildSystemContext } from "../utils/prompt-builder"; // 👈 Importamos o cozinheiro
+import { ReservationService } from "./reservation-service"; // 👈 Importamos as regras de negócio
 
 export class GeminiService {
   private genAI: GoogleGenerativeAI;
+  private reservationService: ReservationService; // 👈 Instanciamos o serviço
   private readonly MAIN_API_URL =
     process.env.MAIN_API_URL || "http://localhost:3000";
   private readonly MAIN_API_TOKEN = process.env.MAIN_API_TOKEN;
@@ -17,6 +19,7 @@ export class GeminiService {
 
   constructor() {
     this.genAI = new GoogleGenerativeAI(process.env.GEMINI_API_KEY || "");
+    this.reservationService = new ReservationService(); // 👈 Iniciamos a ferramenta
   }
 
   private tools = [
@@ -38,7 +41,8 @@ export class GeminiService {
         },
         {
           name: "create_reservation",
-          description: "Cria reserva e gera PIX.",
+          description:
+            "Cria reserva e gera PIX. Se for aniversário, defina isBirthday como true.",
           parameters: {
             type: "object",
             properties: {
@@ -50,6 +54,12 @@ export class GeminiService {
                 description: "A data no formato AAAA-MM-DD",
               },
               spaceName: { type: "string" },
+              // 🎂 NOVO PARÂMETRO DA FASE 3:
+              isBirthday: {
+                type: "boolean",
+                description:
+                  "Deve ser true SOMENTE SE o cliente expressamente disse que a reserva é para comemorar o próprio aniversário.",
+              },
             },
             required: [
               "customerName",
@@ -57,6 +67,7 @@ export class GeminiService {
               "customerEmail",
               "date",
               "spaceName",
+              "isBirthday", // Exigimos que a IA sempre envie essa flag
             ],
           },
         },
@@ -82,6 +93,7 @@ export class GeminiService {
         },
       );
       const nightclub = responseMain.data;
+
       if (!nightclub?.aiAgent?.isActive) {
         console.warn(
           `[${requestId}] ⚠️ Agente inativo ou balada não encontrada.`,
@@ -89,7 +101,8 @@ export class GeminiService {
         return null;
       }
 
-      const systemContext = this.buildSystemContext(nightclub);
+      // 🍔 AQUI CHAMAMOS O CONSTRUTOR DE PROMPTS EXTERNO
+      const systemContext = buildSystemContext(nightclub);
 
       const rawHistory = await prisma.aiMemory.findMany({
         where: { nightclubId, customerPhone },
@@ -135,20 +148,21 @@ export class GeminiService {
             const args: any = call.args;
             let functionResult = "";
 
+            // 🧰 AQUI CHAMAMOS O NOVO SERVIÇO DE RESERVAS
             if (call.name === "get_available_spaces") {
-              functionResult = await this.getAvailableSpaces(
+              functionResult = await this.reservationService.getAvailableSpaces(
                 nightclubId,
                 args.date,
                 requestId,
               );
             } else if (call.name === "create_reservation") {
-              functionResult = await this.createReservationAndPayment(
-                nightclubId,
-                nightclub,
-                args,
-                requestId,
-                customerPhone,
-              );
+              functionResult =
+                await this.reservationService.createReservationAndPayment(
+                  nightclubId,
+                  args,
+                  requestId,
+                  customerPhone,
+                );
             }
 
             const nextStep = await chat.sendMessage([
@@ -168,6 +182,7 @@ export class GeminiService {
             }
           }
 
+          // Salva histórico no banco
           await prisma.aiMemory.createMany({
             data: [
               { nightclubId, customerPhone, role: "user", content: message },
@@ -204,145 +219,5 @@ export class GeminiService {
       console.error(`[${requestId}] 🚨 ERRO SISTÊMICO: ${e.message}`);
       return null;
     }
-  }
-
-  private async getAvailableSpaces(
-    nightclubId: string,
-    dateStr: string,
-    requestId: string,
-  ) {
-    try {
-      const date = startOfDay(new Date(dateStr));
-      const allSpaces = await prisma.space.findMany({
-        where: { nightclubId, status: "ACTIVE" },
-      });
-      const occupiedReservations = await prisma.reservation.findMany({
-        where: { nightclubId, date, status: { in: ["CONFIRMED", "PENDING"] } },
-        select: { spaceId: true },
-      });
-      const occupiedIds = occupiedReservations.map((r) => r.spaceId);
-      const available = allSpaces.filter((s) => !occupiedIds.includes(s.id));
-
-      if (available.length === 0)
-        return "Nenhum setor disponível para esta data.";
-      return (
-        "Disponíveis para esta data: " +
-        available.map((s) => `${s.name} (R$${s.price})`).join(", ")
-      );
-    } catch (error) {
-      return "Erro ao ler a data. Peça ao cliente para fornecer a data exata.";
-    }
-  }
-
-  private async createReservationAndPayment(
-    nightclubId: string,
-    nightclub: any,
-    args: any,
-    requestId: string,
-    customerPhone: string,
-  ) {
-    console.log(`[${requestId}] 📝 Criando reserva para ${args.customerName}`);
-    try {
-      const date = startOfDay(new Date(args.date));
-
-      const space = await prisma.space.findFirst({
-        where: {
-          nightclubId,
-          name: { contains: args.spaceName, mode: "insensitive" },
-          status: "ACTIVE",
-        },
-      });
-      if (!space)
-        return "Erro: Setor inexistente. Verifique os setores disponíveis com a função get_available_spaces.";
-
-      // 🛑 ESCUDO ANTI-OVERBOOKING
-      const isOccupied = await prisma.reservation.findFirst({
-        where: {
-          nightclubId,
-          spaceId: space.id,
-          date: date,
-          status: { in: ["CONFIRMED", "PENDING"] },
-        },
-      });
-
-      if (isOccupied) {
-        console.warn(
-          `[${requestId}] 🛑 Bloqueado Overbooking! IA tentou reservar o ${space.name} mas já estava ocupado.`,
-        );
-        return `ERRO CRÍTICO: O setor "${space.name}" já foi reservado ou está aguardando pagamento para o dia ${format(date, "dd/MM/yyyy")}. Informe o cliente gentilmente que este setor esgotou e ofereça as outras opções disponíveis (use a função get_available_spaces para ver quais sobraram).`;
-      }
-
-      const customer = await prisma.customer.upsert({
-        where: { email: args.customerEmail },
-        update: { phone: args.customerPhone, name: args.customerName },
-        create: {
-          name: args.customerName,
-          phone: args.customerPhone,
-          email: args.customerEmail,
-        },
-      });
-
-      const defaultDeadline = new Date(new Date().getTime() + 20 * 60000);
-      const reservation = await prisma.reservation.create({
-        data: {
-          nightclubId,
-          spaceId: space.id,
-          customerId: customer.id,
-          customerName: customer.name,
-          customerPhone: customer.phone,
-          customerEmail: customer.email,
-          date,
-          amount: space.price,
-          status: "PENDING",
-          paymentDeadline: defaultDeadline,
-        },
-      });
-
-      const pixResponse = await axios.post(
-        `${this.MAIN_API_URL}/payments/generate-pix`,
-        {
-          reservationId: reservation.id,
-          nightclubId: nightclubId,
-        },
-        { headers: { "x-internal-key": this.MAIN_API_TOKEN } },
-      );
-
-      const pixCode = pixResponse.data.pixCode;
-
-      const checkoutLink = `https://reservasclub.com.br/checkout/${reservation.id}`;
-
-      return `RESERVA CRIADA COM SUCESSO!
-      
-1. Código PIX Copia e Cola: ${pixCode}
-2. Link do Checkout: ${checkoutLink}
-
-INSTRUÇÕES FINAIS PARA A IA: Repasse o Copia e Cola e a URL do Link do Checkout como TEXTO PURO. NUNCA use formatação markdown como [url](url). Apenas cole o link limpo.`;
-    } catch (e: any) {
-      console.error(`[${requestId}] 💥 Erro na criação: ${e.message}`);
-      return "Erro no processo de PIX. Peça para o cliente aguardar.";
-    }
-  }
-
-  private buildSystemContext(nightclub: any) {
-    const customPrompt =
-      nightclub?.aiAgent?.systemPrompt ||
-      "Você é um assistente virtual prestativo.";
-
-    const dataDeHoje = format(new Date(), "dd/MM/yyyy");
-
-    return `IDENTIDADE DO AGENTE:
-${customPrompt}
-
--------------------
-REGRAS OBRIGATÓRIAS DE ATENDIMENTO (NÃO QUEBRE SOB HIPÓTESE ALGUMA):
-1. Você representa EXCLUSIVAMENTE a balada: ${nightclub.name}. NUNCA diga que é uma IA ou modelo do Google. Aja como humano 100% do tempo.
-2. HOJE É DIA: ${dataDeHoje}. 
-3. 🛑 ATENDIMENTO NATURAL: Se o cliente enviar apenas uma saudação (ex: "oi", "boa noite") ou fizer uma pergunta geral (ex: "qual a programação?", "onde fica?"), responda de forma educada usando a sua Identidade. NÃO inicie o fluxo de reserva, NÃO peça datas e NÃO chame funções sem ele pedir.
-4. FLUXO DE RESERVA: SÓ chame a função 'get_available_spaces' SE o cliente perguntar o que tem disponível ou disser que quer reservar algo.
-5. Nas chamadas de função, envie a data sempre no formato matemático AAAA-MM-DD.
-6. APÓS usar 'get_available_spaces', responda ao cliente listando as opções e preços que você encontrou.
-7. PARA FECHAR RESERVA: SÓ chame 'create_reservation' QUANDO o cliente escolher o setor. Peça o nome, email e telefone ANTES de chamar a função.
-8. APÓS usar 'create_reservation', entregue o código "Copia e Cola" PIX e o Link do Checkout em formato de TEXTO PURO. NUNCA use formatação markdown de links como [link](link), apenas escreva o endereço completo limpo.
-9. 🛑 O histórico contém o passado. SÓ crie uma reserva se o cliente pedir uma reserva NOVA na mensagem atual.`;
   }
 }

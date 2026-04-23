@@ -253,8 +253,8 @@ export const handleEvolutionWebhook = async (req: Request, res: Response) => {
             await enviarMediaWhatsApp(
               instanceName,
               customerJid,
-              fotoMapaUrl,
-              "📍 Mapa de Setores - UP Bar",
+              fotoMapaUrl, // 👈 Usando o seu mapUrl certinho
+              `📍 Mapa de Setores - ${whatsappInstance.nightclub?.name}`, // 👈 Nome dinâmico da balada!
             );
           }, 1500);
         } else {
