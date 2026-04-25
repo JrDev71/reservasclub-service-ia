@@ -180,28 +180,30 @@ export const enviarMediaWhatsApp = async (
   number: string,
   mediaData: string,
   caption: string = "",
+  type: "image" | "video" = "image", // 👈 Adicionamos o tipo aqui, padrão image
 ) => {
   try {
     let mediaFormatada = mediaData;
-
-    // 1. Verifica se é um LINK de internet (URL)
     const isUrl =
       mediaData.startsWith("http://") || mediaData.startsWith("https://");
 
-    // 2. Se NÃO for URL, significa que é Base64. A gente garante que tem o prefixo correto.
     if (!isUrl) {
+      // Se for base64, ajustamos o prefixo conforme o tipo
+      const prefix =
+        type === "video" ? "data:video/mp4;base64," : "data:image/png;base64,";
       mediaFormatada = mediaData.includes("base64,")
         ? mediaData
-        : `data:image/png;base64,${mediaData}`;
+        : `${prefix}${mediaData}`;
     }
 
     const response = await evolutionClient.post(
       `/message/sendMedia/${instanceName}`,
       {
         number: number,
-        mediatype: "image",
-        // Só usamos o mimetype se formos mandar um arquivo base64, se for URL, a Evolution deduz sozinha
-        ...(isUrl ? {} : { mimetype: "image/png" }),
+        mediatype: type, // 👈 Agora ele usa o tipo dinâmico!
+        ...(isUrl
+          ? {}
+          : { mimetype: type === "video" ? "video/mp4" : "image/png" }),
         caption: caption,
         media: mediaFormatada,
         delay: 1500,
@@ -210,7 +212,7 @@ export const enviarMediaWhatsApp = async (
     return response.data;
   } catch (error: any) {
     console.error(
-      `[Evolution API] Erro ao enviar mídia para ${number}:`,
+      `[Evolution API] Erro ao enviar mídia (${type}) para ${number}:`,
       error.response?.data || error.message,
     );
   }

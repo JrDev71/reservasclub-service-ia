@@ -220,6 +220,7 @@ export const handleEvolutionWebhook = async (req: Request, res: Response) => {
       let finalResponse = aiResponse;
       let mediaUrlParaEnviar: string | null = null;
       let mediaCaption = "";
+      let isVideo = false; // 👈 Controle para saber se é vídeo
 
       // 1. Procura se a IA usou ALGUMA das tags mapeadas no nosso dicionário
       const tagEncontrada = Object.keys(tagToDbKeyMap).find((tag) =>
@@ -231,6 +232,9 @@ export const handleEvolutionWebhook = async (req: Request, res: Response) => {
         finalResponse = finalResponse.replace(tagEncontrada, "").trim();
 
         const dbKey = tagToDbKeyMap[tagEncontrada];
+
+        // Define se a mídia atual é vídeo (Tag de aniversário)
+        isVideo = tagEncontrada === "[ENVIAR_VIDEO_ANIVERSARIO]";
 
         // 3. Puxa a URL correspondente (O Mapa vem de um lugar, os Flyers de outro)
         if (dbKey === "mapUrl") {
@@ -269,6 +273,7 @@ export const handleEvolutionWebhook = async (req: Request, res: Response) => {
               customerJid,
               mediaUrlParaEnviar!,
               mediaCaption,
+              isVideo ? "video" : "image", // 👈 Agora passamos o tipo correto aqui
             );
           }, 1500);
         } else {
