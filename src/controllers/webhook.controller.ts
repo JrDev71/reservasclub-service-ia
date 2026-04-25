@@ -1,9 +1,8 @@
 import { Request, Response } from "express";
+import { enviarMediaWhatsApp } from "../services/evolution.service";
 import { prisma } from "../lib/prisma";
 import { GeminiService } from "../services/gemini.service";
 import axios from "axios";
-// 👈 Adicionada a importação para o envio de imagens
-import { enviarMediaWhatsApp } from "../services/evolution.service";
 
 const geminiService = new GeminiService();
 const processedMessages = new Set<string>();
@@ -13,6 +12,19 @@ const processedMessages = new Set<string>();
 // =======================================================================
 const statusCache = new Map<string, { state: string; time: number }>();
 const lastQrCodeUpdate = new Map<string, number>();
+
+// 🗺️ DICIONÁRIO DE TAGS -> CHAVES DO BANCO DE DADOS
+const tagToDbKeyMap: Record<string, string> = {
+  "[ENVIAR_FLYER_SEGUNDA]": "monFlyer",
+  "[ENVIAR_FLYER_TERCA]": "tueFlyer",
+  "[ENVIAR_FLYER_QUARTA]": "wedFlyer",
+  "[ENVIAR_FLYER_QUINTA]": "thuFlyer",
+  "[ENVIAR_FLYER_SEXTA]": "friFlyer",
+  "[ENVIAR_FLYER_SABADO]": "satFlyer",
+  "[ENVIAR_FLYER_DOMINGO]": "sunFlyer",
+  "[ENVIAR_VIDEO_ANIVERSARIO]": "birthdayVideo",
+  "[ENVIAR_MAPA]": "mapUrl", // O mapa fica na raiz do Nightclub, tratamos ele como exceção
+};
 
 export const handleEvolutionWebhook = async (req: Request, res: Response) => {
   const body = req.body;
@@ -35,16 +47,14 @@ export const handleEvolutionWebhook = async (req: Request, res: Response) => {
 
       if (!status || status === "undefined") return;
 
-      // 🛡️ BLOQUEIO DE SPAM: Se a Evolution mandar o mesmo status em menos de 5 segundos, morre aqui!
       const cached = statusCache.get(instanceName);
       if (
         cached &&
         cached.state === status &&
         Date.now() - cached.time < 5000
       ) {
-        return; // Ignora o spam. Poupamos 1 query no banco e 1 requisição HTTP!
+        return;
       }
-      // Salva o novo status na memória
       statusCache.set(instanceName, { state: status, time: Date.now() });
 
       console.log(
@@ -52,13 +62,10 @@ export const handleEvolutionWebhook = async (req: Request, res: Response) => {
       );
 
       let statusFinal = status;
-
-      // Puxa a verdade absoluta do banco antes de tomar decisão
       const currentState = await prisma.whatsappInstance.findUnique({
         where: { instanceName },
       });
 
-      // 🛑 TRAVA: Se falhou/expirou (e não estava conectado)
       if (
         status === "refused" ||
         (status === "close" && currentState?.status !== "CONNECTED")
@@ -67,26 +74,20 @@ export const handleEvolutionWebhook = async (req: Request, res: Response) => {
         console.log(
           `[Sentinela] Tempo esgotado/Recusado. Limpando QR Code para resetar o botão...`,
         );
-
         await prisma.whatsappInstance.update({
           where: { instanceName },
           data: { status: "DISCONNECTED", qrCode: null },
         });
-      }
-      // ✅ SALVAÇÃO: Se conectou, atualiza na hora e desarma a guilhotina!
-      else if (status === "open" || status === "connected") {
+      } else if (status === "open" || status === "connected") {
         statusFinal = "CONNECTED";
         console.log(
           `[Sentinela] 🟢 Conexão de sucesso! Atualizando banco para desarmar a guilhotina...`,
         );
-
         await prisma.whatsappInstance.update({
           where: { instanceName },
           data: { status: "CONNECTED", qrCode: null },
         });
-      }
-      // 🛡️ BLINDAGEM CONTRA RESTART DO RENDER
-      else if (status === "connecting" || status === "close") {
+      } else if (status === "connecting" || status === "close") {
         if (currentState?.status === "CONNECTED") {
           console.log(
             `[Sentinela] 🛡️ Blindagem Ativa: Instância flutuou (${status}), mas já está CONNECTED. Ocultando da Main API...`,
@@ -96,7 +97,6 @@ export const handleEvolutionWebhook = async (req: Request, res: Response) => {
         statusFinal = status === "close" ? "DISCONNECTED" : "CONNECTING";
       }
 
-      // Avisando Main API sobre a mudança de status
       await axios
         .patch(
           `${process.env.MAIN_API_URL}/nightclubs/instance/status`,
@@ -114,21 +114,17 @@ export const handleEvolutionWebhook = async (req: Request, res: Response) => {
     // 📱 ESCUTA: RENOVAÇÃO DO QR CODE
     // =======================================================================
     if (eventName === "qrcode.updated") {
-      // 🛡️ BLOQUEIO DE SPAM: Só permite processar 1 QR Code a cada 5 segundos
       const lastUpdate = lastQrCodeUpdate.get(instanceName) || 0;
       if (Date.now() - lastUpdate < 5000) return;
 
       const base64 = body.data?.qrcode?.base64 || body.data?.base64;
 
       if (base64) {
-        // Renova o tempo na memória
         lastQrCodeUpdate.set(instanceName, Date.now());
-
         const checkInstance = await prisma.whatsappInstance.findUnique({
           where: { instanceName },
         });
 
-        // 🛑 TRAVA DE OURO: Ignora o QR Code se o cara estiver gerando o Pairing Code!
         if (checkInstance && checkInstance.status === "CONNECTING") {
           console.log(
             `[Sentinela] 🛡️ Ignorando QR Code de fundo. O usuário está no fluxo de Pairing Code.`,
@@ -158,7 +154,6 @@ export const handleEvolutionWebhook = async (req: Request, res: Response) => {
     const messageId = messageData?.key?.id;
 
     if (!messageData || !messageId) return;
-
     if (processedMessages.has(messageId)) return;
     if (messageData.key.fromMe || messageData.message?.protocolMessage) return;
 
@@ -186,12 +181,10 @@ export const handleEvolutionWebhook = async (req: Request, res: Response) => {
       console.log(
         `[Sentinela] 🩹 Auto-cura ativada: Mensagem recebida, forçando status do banco para CONNECTED.`,
       );
-
       await prisma.whatsappInstance.update({
         where: { instanceName },
         data: { status: "CONNECTED", qrCode: null },
       });
-
       await axios
         .patch(
           `${process.env.MAIN_API_URL}/nightclubs/instance/status`,
@@ -221,52 +214,76 @@ export const handleEvolutionWebhook = async (req: Request, res: Response) => {
     );
 
     // =======================================================================
-    // 📩 ENVIO DA RESPOSTA E INTERCEPTAÇÃO DE MÍDIA
+    // 📩 ENVIO DA RESPOSTA E INTERCEPTAÇÃO UNIVERSAL DE MÍDIA
     // =======================================================================
     if (aiResponse) {
-      // 1. Verifica se a IA acionou a tag para enviar o mapa
-      const requiresMap = aiResponse.includes("[ENVIAR_MAPA]");
-
-      // 2. Remove a tag para não aparecer no WhatsApp do cliente
       let finalResponse = aiResponse;
-      if (requiresMap) {
-        finalResponse = aiResponse.replace("[ENVIAR_MAPA]", "").trim();
+      let mediaUrlParaEnviar: string | null = null;
+      let mediaCaption = "";
+
+      // 1. Procura se a IA usou ALGUMA das tags mapeadas no nosso dicionário
+      const tagEncontrada = Object.keys(tagToDbKeyMap).find((tag) =>
+        finalResponse.includes(tag),
+      );
+
+      if (tagEncontrada) {
+        // 2. Remove a tag para o cliente não ler o código fantasma
+        finalResponse = finalResponse.replace(tagEncontrada, "").trim();
+
+        const dbKey = tagToDbKeyMap[tagEncontrada];
+
+        // 3. Puxa a URL correspondente (O Mapa vem de um lugar, os Flyers de outro)
+        if (dbKey === "mapUrl") {
+          mediaUrlParaEnviar = whatsappInstance.nightclub?.mapUrl || null;
+          mediaCaption = `📍 Mapa de Setores - ${whatsappInstance.nightclub?.name}`;
+        } else {
+          // Extrai o objeto JSON das mídias
+          const mediaLinks =
+            (aiAgent.mediaLinks as Record<string, string>) || {};
+          mediaUrlParaEnviar = mediaLinks[dbKey] || null;
+
+          // Legenda personalizada se for Aniversário ou Flyer
+          mediaCaption =
+            tagEncontrada === "[ENVIAR_VIDEO_ANIVERSARIO]"
+              ? `🎂 Promoção de Aniversário - ${whatsappInstance.nightclub?.name}`
+              : `🎉 Programação - ${whatsappInstance.nightclub?.name}`;
+        }
       }
 
-      // 3. Envia o texto da resposta normalmente
+      // 4. Envia o texto da resposta normalmente (agora sem a tag)
       if (finalResponse.length > 0) {
         const formattedResponse = formatForWhatsApp(finalResponse);
         await sendToWhatsApp(instanceName, customerJid, formattedResponse);
       }
 
-      // 4. Se a tag foi ativada, puxa a foto e dispara logo em seguida
-      if (requiresMap) {
-        const fotoMapaUrl = whatsappInstance.nightclub?.mapUrl;
-
-        if (fotoMapaUrl) {
+      // 5. Se a tag foi ativada, dispara a mídia logo em seguida
+      if (tagEncontrada) {
+        if (mediaUrlParaEnviar) {
           console.log(
-            `[Webhook] 🗺️ IA acionou gatilho de Mapa para ${customerJid}! Enviando imagem...`,
+            `[Webhook] 📸 Gatilho '${tagEncontrada}' acionado! Enviando mídia...`,
           );
 
-          // Aguarda um pouquinho para a foto chegar logo após o texto
           setTimeout(async () => {
             await enviarMediaWhatsApp(
               instanceName,
               customerJid,
-              fotoMapaUrl, // 👈 Usando o seu mapUrl certinho
-              `📍 Mapa de Setores - ${whatsappInstance.nightclub?.name}`, // 👈 Nome dinâmico da balada!
+              mediaUrlParaEnviar!,
+              mediaCaption,
             );
           }, 1500);
         } else {
           console.log(
-            `[Webhook] ⚠️ Gatilho de mapa acionado, mas 'mapUrl' está vazio no banco de dados.`,
+            `[Webhook] ⚠️ Gatilho '${tagEncontrada}' acionado, mas a URL estava vazia no banco.`,
           );
 
-          // Avisa o cliente educadamente que o sistema não tem a foto ainda
-          const msgSemMapa =
-            "Poxa, peço desculpas, mas no momento estou sem a foto do nosso mapa por aqui! 😕 Mas posso te explicar como funcionam os setores, qual você prefere?";
+          // Fallback elegante se o banco retornar nulo pra mídia
+          const msgSemMidia =
+            tagEncontrada === "[ENVIAR_MAPA]"
+              ? "Poxa, peço desculpas, mas no momento estou sem a foto do nosso mapa por aqui! 😕 Mas posso te explicar como funcionam os setores, qual você prefere?"
+              : "Poxa, peço desculpas, mas a arte desse evento ainda não está disponível no sistema! 😕 Mas qualquer dúvida sobre a programação, é só falar.";
+
           setTimeout(async () => {
-            await sendToWhatsApp(instanceName, customerJid, msgSemMapa);
+            await sendToWhatsApp(instanceName, customerJid, msgSemMidia);
           }, 1500);
         }
       }
