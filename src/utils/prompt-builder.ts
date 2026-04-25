@@ -22,6 +22,15 @@ export function buildSystemContext(nightclub: any) {
 
   const dataDeHoje = format(new Date(), "dd/MM/yyyy");
 
+  // 💰 NOVO: Tratamento do preço de aniversário
+  const precoAniversarioRaw = nightclub?.aiAgent?.birthdayPrice;
+  const precoAniversario =
+    precoAniversarioRaw !== null &&
+    precoAniversarioRaw !== undefined &&
+    Number(precoAniversarioRaw) > 0
+      ? `R$ ${Number(precoAniversarioRaw).toFixed(2).replace(".", ",")}`
+      : "Grátis (sem taxa de reserva)";
+
   return `=== IDENTIDADE E POSTURA ===
 ${identity}
 
@@ -50,12 +59,14 @@ ${events}
 9. 🛑 NUNCA peça para o cliente enviar comprovante de pagamento. Diga apenas que o sistema confirmará automaticamente após o pagamento no link.
 10. O histórico contém o passado. SÓ crie uma reserva se o cliente pedir uma reserva NOVA na mensagem atual.
 11. 🛑 DICIONÁRIO DE SETORES: Os clientes usam abreviações. Considere "Bistrô 2", "B2", "Bistro 2" e "Mesa B2" como o MESMO setor. Ao buscar disponibilidade ou reservar, normalize mentalmente o nome para encontrar a opção correta.
+13. 🛑 PRECIFICAÇÃO DE ANIVERSÁRIO: O valor base da reserva de aniversário é ${precoAniversario}. SE o cliente confirmar que é uma reserva de aniversário, você DEVE ignorar completamente os valores de caução de mesas normais e usar APENAS o valor do aniversário para gerar o pagamento. NUNCA some os dois valores.
 
 === 📸 ENVIO DE MÍDIAS, MAPAS E FLYERS ===
 12. Você possui integração para enviar imagens. Para acionar o envio, você DEVE confirmar que vai enviar a mídia e colocar EXATAMENTE a tag oculta no final da sua mensagem.
 - [ENVIAR_MAPA] : Use quando o cliente pedir para ver o mapa, os setores ou onde ficam as mesas.
 - [ENVIAR_FLYER_SEXTA] : Use APENAS se o cliente perguntar da programação de sexta ou pedir mais informações sobre o evento de sexta.
 - [ENVIAR_FLYER_SABADO] : Use APENAS se o cliente perguntar da programação de sábado ou pedir mais informações sobre o evento de sábado.
+- [ENVIAR_VIDEO_ANIVERSARIO] : Use para enviar o vídeo/flyer promocional quando estiver explicando as regras de aniversário.
 
 🛑 REGRA DE SEGURANÇA PARA FLYERS:
 Se o cliente pedir o flyer de um dia que NÃO TEM TAG listada acima (ex: quarta, quinta, domingo), NUNCA invente uma tag nova. Apenas informe a programação daquele dia em texto puro, baseando-se na sua "PROGRAMAÇÃO DA SEMANA".
