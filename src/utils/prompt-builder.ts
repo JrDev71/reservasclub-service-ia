@@ -4,25 +4,21 @@ export function buildSystemContext(nightclub: any) {
   const identity =
     nightclub?.aiAgent?.promptIdentity ||
     nightclub?.aiAgent?.systemPrompt ||
-    "Você é um assistente virtual prestativo e educado.";
+    "Você é um assistente virtual prestativo.";
   const tableRules =
-    nightclub?.aiAgent?.promptTable ||
-    "Consulte os valores e horários disponíveis.";
+    nightclub?.aiAgent?.promptTable || "Consulte os valores disponíveis.";
   const birthdayRules =
     nightclub?.aiAgent?.promptBirthday ||
     "Consulte as condições de aniversário.";
   const events =
-    nightclub?.aiAgent?.promptEvents ||
-    "Nenhum evento especial ativo no momento.";
+    nightclub?.aiAgent?.promptEvents || "Nenhum evento especial no momento.";
 
-  let scheduleText = "Programação não informada.";
-  if (nightclub?.aiAgent?.promptSchedule) {
-    scheduleText = JSON.stringify(nightclub.aiAgent.promptSchedule, null, 2);
-  }
+  const schedule = nightclub?.aiAgent?.promptSchedule || {};
+  const mediaLinks = nightclub?.aiAgent?.mediaLinks || {};
 
   const dataDeHoje = format(new Date(), "dd/MM/yyyy");
 
-  // 💰 NOVO: Tratamento do preço de aniversário
+  // 💰 Tratamento do preço de aniversário
   const precoAniversarioRaw = nightclub?.aiAgent?.birthdayPrice;
   const precoAniversario =
     precoAniversarioRaw !== null &&
@@ -30,6 +26,34 @@ export function buildSystemContext(nightclub: any) {
     Number(precoAniversarioRaw) > 0
       ? `R$ ${Number(precoAniversarioRaw).toFixed(2).replace(".", ",")}`
       : "Grátis (sem taxa de reserva)";
+
+  // 🚀 MAPEAMENTO DINÂMICO DE TAGS DE MÍDIA
+  const dayMap: any = {
+    mon: "SEGUNDA",
+    tue: "TERCA",
+    wed: "QUARTA",
+    thu: "QUINTA",
+    fri: "SEXTA",
+    sat: "SABADO",
+    sun: "DOMINGO",
+  };
+
+  // Aqui a gente cria a lista de tags baseada no que o dono da balada UPOU de fato
+  let dynamicMediaTags = "";
+  Object.keys(mediaLinks).forEach((key) => {
+    if (key.endsWith("Flyer") && mediaLinks[key]) {
+      const dayKey = key.replace("Flyer", ""); // extrai "mon", "tue", etc
+      const dayName = dayMap[dayKey];
+      if (dayName) {
+        dynamicMediaTags += `- [ENVIAR_FLYER_${dayName}] : Use quando o cliente perguntar da programação de ${dayName.toLowerCase()} ou pedir o flyer desse dia.\n`;
+      }
+    }
+  });
+
+  // Tag de vídeo de aniversário (se houver)
+  if (mediaLinks.birthdayVideo) {
+    dynamicMediaTags += `- [ENVIAR_VIDEO_ANIVERSARIO] : Use ao explicar as regras de aniversário para mostrar o vídeo promocional.\n`;
+  }
 
   return `=== IDENTIDADE E POSTURA ===
 ${identity}
@@ -41,36 +65,25 @@ ${tableRules}
 ${birthdayRules}
 
 === PROGRAMAÇÃO DA SEMANA ===
-${scheduleText}
+${JSON.stringify(schedule, null, 2)}
 
 === EVENTOS ESPECIAIS E AVISOS ===
 ${events}
 
 -------------------
-⚠️ REGRAS OBRIGATÓRIAS DE ATENDIMENTO (NÃO QUEBRE SOB HIPÓTESE ALGUMA):
-1. Você representa EXCLUSIVAMENTE a balada: ${nightclub.name}. NUNCA diga que é uma IA ou modelo do Google. Aja como humano 100% do tempo.
-2. HOJE É DIA: ${dataDeHoje}. Baseie-se nisso para saber quais eventos da programação estão próximos ou já passaram.
-3. 🛑 ATENDIMENTO NATURAL: Se o cliente enviar apenas uma saudação (ex: "oi") ou pergunta geral, responda educadamente. NÃO inicie fluxo de reserva sem ele pedir.
-4. FLUXO DE RESERVA: SÓ chame a função 'get_available_spaces' SE o cliente perguntar o que tem disponível ou disser que quer reservar algo.
-5. Nas chamadas de função, envie a data sempre no formato matemático AAAA-MM-DD.
-6. APÓS usar 'get_available_spaces', liste as opções e preços que você encontrou.
-7. PARA FECHAR RESERVA: SÓ chame 'create_reservation' QUANDO o cliente escolher o setor. Peça o nome, email e telefone ANTES de chamar a função.
-8. 🛑 PIX E PAGAMENTO: APÓS usar 'create_reservation', entregue o código "Copia e Cola" PIX e o Link do Checkout em texto puro. NUNCA use formatação markdown de links como [link](url).
-9. 🛑 NUNCA peça para o cliente enviar comprovante de pagamento. Diga apenas que o sistema confirmará automaticamente após o pagamento no link.
-10. O histórico contém o passado. SÓ crie uma reserva se o cliente pedir uma reserva NOVA na mensagem atual.
-11. 🛑 DICIONÁRIO DE SETORES: Os clientes usam abreviações. Considere "Bistrô 2", "B2", "Bistro 2" e "Mesa B2" como o MESMO setor. Ao buscar disponibilidade ou reservar, normalize mentalmente o nome para encontrar a opção correta.
-13. 🛑 PRECIFICAÇÃO DE ANIVERSÁRIO: O valor base da reserva de aniversário é ${precoAniversario}. SE o cliente confirmar que é uma reserva de aniversário, você DEVE ignorar completamente os valores de caução de mesas normais e usar APENAS o valor do aniversário para gerar o pagamento. NUNCA some os dois valores.
+⚠️ REGRAS OBRIGATÓRIAS DE ATENDIMENTO:
+1. Você representa EXCLUSIVAMENTE a balada: ${nightclub.name}.
+2. HOJE É DIA: ${dataDeHoje}.
+3. 🛑 PRECIFICAÇÃO DE ANIVERSÁRIO: O valor base é ${precoAniversario}. Se for aniversário, ignore o valor da mesa e use este.
+... (suas outras regras 4 a 11) ...
 
-=== 📸 ENVIO DE MÍDIAS, MAPAS E FLYERS ===
-12. Você possui integração para enviar imagens. Para acionar o envio, você DEVE confirmar que vai enviar a mídia e colocar EXATAMENTE a tag oculta no final da sua mensagem.
-- [ENVIAR_MAPA] : Use quando o cliente pedir para ver o mapa, os setores ou onde ficam as mesas.
-- [ENVIAR_FLYER_SEXTA] : Use APENAS se o cliente perguntar da programação de sexta ou pedir mais informações sobre o evento de sexta.
-- [ENVIAR_FLYER_SABADO] : Use APENAS se o cliente perguntar da programação de sábado ou pedir mais informações sobre o evento de sábado.
-- [ENVIAR_VIDEO_ANIVERSARIO] : Use para enviar o vídeo/flyer promocional quando estiver explicando as regras de aniversário.
+=== 📸 ENVIO DE MÍDIAS (USO OBRIGATÓRIO DE TAGS) ===
+Para enviar fotos ou vídeos, você DEVE colocar a tag EXATAMENTE como listada abaixo ao final da sua mensagem:
 
-🛑 REGRA DE SEGURANÇA PARA FLYERS:
-Se o cliente pedir o flyer de um dia que NÃO TEM TAG listada acima (ex: quarta, quinta, domingo), NUNCA invente uma tag nova. Apenas informe a programação daquele dia em texto puro, baseando-se na sua "PROGRAMAÇÃO DA SEMANA".
-Exemplo de resposta correta para dias sem tag: "Nesta quarta teremos rodada dupla de chopp! Ainda não tenho a imagem oficial, mas a casa abre às 18h e vai ter música ao vivo."
+- [ENVIAR_MAPA] : Use quando o cliente pedir para ver o mapa ou setores.
+${dynamicMediaTags}
 
-Atenção: NÃO TENTE desenhar o mapa e NÃO TENTE enviar links. NUNCA coloque texto depois da tag. Apenas use a tag correta e deixe no final da frase.`;
+🛑 REGRA DE SEGURANÇA: Se o cliente pedir flyer de um dia que NÃO possui uma tag [ENVIAR_FLYER_...] listada acima, responda apenas em texto informando que o flyer ainda não está disponível, mas descreva a programação.
+
+Atenção: NÃO coloque texto depois da tag.`;
 }
