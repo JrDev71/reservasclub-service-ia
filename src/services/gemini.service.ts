@@ -12,9 +12,9 @@ export class GeminiService {
   private readonly MAIN_API_TOKEN = process.env.MAIN_API_TOKEN;
 
   private fallbackModels = [
+    "gemini-3.5-flash", // 🚀 A estrela principal: O modelo Flash atual mais inteligente e rápido.
+    "gemini-3.1-flash-lite",
     "gemini-2.5-flash",
-    "gemini-1.5-flash",
-    "gemini-flash-latest",
   ];
 
   constructor() {
@@ -112,7 +112,7 @@ export class GeminiService {
 
       rawHistory.reverse();
 
-      let formattedHistory = rawHistory.map((m) => ({
+      let formattedHistory = rawHistory.map((m: any) => ({
         role: m.role === "assistant" ? "model" : m.role,
         parts: [{ text: m.content }],
       }));
