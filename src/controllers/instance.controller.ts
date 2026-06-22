@@ -119,6 +119,9 @@ const iniciarCronometroCancelamento = (instanceName: string) => {
 // ============================================================================
 // 1. CRIAÇÃO DE NOVA INSTÂNCIA (A primeira vez)
 // ============================================================================
+// ============================================================================
+// 1. CRIAÇÃO DE NOVA INSTÂNCIA (A primeira vez ou Troca de Número)
+// ============================================================================
 export const createNightclubInstance = async (req: Request, res: Response) => {
   try {
     const { nightclubId } = req.body;
@@ -131,12 +134,38 @@ export const createNightclubInstance = async (req: Request, res: Response) => {
       return res.status(404).json({ error: "Balada não encontrada." });
 
     const instanceName = `balada_${nightclub.slug}`;
-    console.log(
-      `[Instance] Iniciando criação na Evolution API: ${instanceName}`,
-    );
+    console.log(`[Instance] Iniciando fluxo na Evolution API: ${instanceName}`);
 
-    const evolutionResponse = await criarInstancia(instanceName);
-    const qrCodeBase64 = evolutionResponse?.qrcode?.base64 || "";
+    let qrCodeBase64 = "";
+
+    try {
+      // Tenta criar a instância do zero
+      const evolutionResponse = await criarInstancia(instanceName);
+      qrCodeBase64 = evolutionResponse?.qrcode?.base64 || "";
+      console.log(`[Instance] Criada do zero com sucesso.`);
+    } catch (createError: any) {
+      // 🛑 INTERCEPTAÇÃO: Se a Evolution disser que já existe (Erro 403 / "already in use")
+      const errorMessage = createError.response?.data?.message?.[0] || "";
+      const isAlreadyInUse =
+        errorMessage.includes("already in use") ||
+        createError.response?.status === 403;
+
+      if (isAlreadyInUse) {
+        console.log(
+          `[Instance] Instância já existe. Derrubando sessão anterior para novo QR Code...`,
+        );
+        // Aciona a sua "Voadora de Logout" para limpar o número antigo
+        await forcarDesconexao(instanceName);
+
+        // Agora que limpou, pede para a Evolution gerar um novo QR Code de conexão
+        const connectResponse = await conectarInstancia(instanceName);
+        qrCodeBase64 =
+          connectResponse?.base64 || connectResponse?.qrcode?.base64 || "";
+      } else {
+        // Se for outro tipo de erro fatal, aborta tudo.
+        throw createError;
+      }
+    }
 
     const webhookUrl =
       process.env.WEBHOOK_URL ||
@@ -163,10 +192,11 @@ export const createNightclubInstance = async (req: Request, res: Response) => {
     return res.status(200).json({ success: true, instance: whatsappInstance });
   } catch (error: any) {
     console.error("[Instance Controller Error]", error.message || error);
-    return res.status(500).json({ error: "Erro ao criar a instância." });
+    return res
+      .status(500)
+      .json({ error: "Erro ao criar ou resetar a instância." });
   }
 };
-
 // ============================================================================
 // 2. RECONEXÃO / FALLBACK (VIA QR CODE TRADICIONAL)
 // ============================================================================
