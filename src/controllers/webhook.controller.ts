@@ -161,6 +161,18 @@ export const handleEvolutionWebhook = async (req: Request, res: Response) => {
     setTimeout(() => processedMessages.delete(messageId), 120000);
 
     const customerJid = messageData.key.remoteJid;
+
+    // 🛑 MÁGICA ACONTECENDO AQUI: BLOQUEIO DE GRUPOS E STATUS
+    if (
+      customerJid &&
+      (customerJid.includes("@g.us") || customerJid.includes("broadcast"))
+    ) {
+      console.log(
+        `[IGNORE] 🚫 Mensagem de grupo/status ignorada: ${customerJid}`,
+      );
+      return; // Para a execução aqui mesmo!
+    }
+
     const textMessage =
       messageData.message?.conversation ||
       messageData.message?.extendedTextMessage?.text;
