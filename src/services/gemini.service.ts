@@ -85,6 +85,10 @@ export class GeminiService {
       `\n[${requestId}] 📨 NOVA MENSAGEM: ${customerPhone} -> "${message}"`,
     );
 
+    console.log(
+      `[${requestId}] 🕵️ DEDO-DURO: Atirando para -> ${this.MAIN_API_URL} com Token: ${this.MAIN_API_TOKEN ? "EXISTE" : "FALTOU!"}`,
+    );
+
     try {
       const responseMain = await axios.get(
         `${this.MAIN_API_URL}/nightclubs/service-ia/${nightclubId}`,
