@@ -36,6 +36,16 @@ export const handleEvolutionWebhook = async (req: Request, res: Response) => {
   // Responder 200 OK IMEDIATAMENTE para a Evolution não dar timeout e parar de spammar
   res.status(200).send("Processing");
 
+  // 👇 --- ADICIONADO PARA DEBUG DAS MENSAGENS V2.3.7 --- 👇
+  console.log(`[DEBUG Webhook] Evento Recebido: ${eventName}`);
+  if (eventName === "messages.upsert") {
+    console.log(
+      `[DEBUG MENSAGEM] Payload cru:`,
+      JSON.stringify(body.data, null, 2),
+    );
+  }
+  // 👆 -------------------------------------------------- 👆
+
   try {
     // =======================================================================
     // 🛰️ NOVA ESCUTA: STATUS DE CONEXÃO BLINDADA
