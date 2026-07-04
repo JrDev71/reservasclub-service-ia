@@ -36,15 +36,10 @@ export const handleEvolutionWebhook = async (req: Request, res: Response) => {
   // Responder 200 OK IMEDIATAMENTE para a Evolution não dar timeout e parar de spammar
   res.status(200).send("Processing");
 
-  // 👇 --- ADICIONADO PARA DEBUG DAS MENSAGENS V2.3.7 --- 👇
-  console.log(`[DEBUG Webhook] Evento Recebido: ${eventName}`);
-  if (eventName === "messages.upsert") {
-    console.log(
-      `[DEBUG MENSAGEM] Payload cru:`,
-      JSON.stringify(body.data, null, 2),
-    );
+  // Apenas avisa que o evento bateu, sem cuspir o payload inteiro
+  if (eventName !== "messages.upsert") {
+    console.log(`[Webhook] Evento de sistema recebido: ${eventName}`);
   }
-  // 👆 -------------------------------------------------- 👆
 
   try {
     // =======================================================================
@@ -189,6 +184,12 @@ export const handleEvolutionWebhook = async (req: Request, res: Response) => {
 
     if (!textMessage || !customerJid) return;
 
+    // 👇 LOG LIMPO DA MENSAGEM RECEBIDA 👇
+    console.log(`\n======================================================`);
+    console.log(`📥 [NOVA MENSAGEM] De: ${customerJid}`);
+    console.log(`💬 [TEXTO]: "${textMessage}"`);
+    console.log(`======================================================\n`);
+
     const whatsappInstance = await prisma.whatsappInstance.findUnique({
       where: { instanceName },
       include: { nightclub: { include: { aiAgent: true } } },
@@ -235,6 +236,14 @@ export const handleEvolutionWebhook = async (req: Request, res: Response) => {
       textMessage,
     );
 
+    // 👇 LOG LIMPO DA RESPOSTA DA IA 👇
+    if (aiResponse) {
+      console.log(`\n======================================================`);
+      console.log(`🤖 [RESPOSTA DA IA] Para: ${customerJid}`);
+      console.log(`🗣️ [TEXTO]: "${aiResponse}"`);
+      console.log(`======================================================\n`);
+    }
+
     // =======================================================================
     // 📩 ENVIO DA RESPOSTA E INTERCEPTAÇÃO UNIVERSAL DE MÍDIA
     // =======================================================================
@@ -242,7 +251,7 @@ export const handleEvolutionWebhook = async (req: Request, res: Response) => {
       let finalResponse = aiResponse;
       let mediaUrlParaEnviar: string | null = null;
       let mediaCaption = "";
-      let isVideo = false; // 👈 Controle para saber se é vídeo
+      let isVideo = false; // Controle para saber se é vídeo
 
       // 1. Procura se a IA usou ALGUMA das tags mapeadas no nosso dicionário
       const tagEncontrada = Object.keys(tagToDbKeyMap).find((tag) =>
@@ -295,7 +304,7 @@ export const handleEvolutionWebhook = async (req: Request, res: Response) => {
               customerJid,
               mediaUrlParaEnviar!,
               mediaCaption,
-              isVideo ? "video" : "image", // 👈 Agora passamos o tipo correto aqui
+              isVideo ? "video" : "image", // Agora passamos o tipo correto aqui
             );
           }, 1500);
         } else {
