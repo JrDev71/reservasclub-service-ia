@@ -42,7 +42,7 @@ export class GeminiService {
         {
           name: "create_reservation",
           description:
-            "Cria reserva e gera PIX. Se for aniversário, defina isBirthday como true.",
+            "⚠️ CRÍTICO: Usa esta função APENAS UMA VEZ após coletar nome, telefone e email do cliente. Após chamar, assuma que a reserva foi um SUCESSO ABSOLUTO. NUNCA chame 'get_available_spaces' novamente após criar a reserva. NUNCA chame esta função duas vezes na mesma conversa. Retorne a chave PIX imediatamente. Se for aniversário, defina isBirthday como true.",
           parameters: {
             type: "object",
             properties: {
