@@ -102,7 +102,7 @@ export class ReservationService {
           ? space.birthdayPrice
           : space.price;
 
-      // ⏳ O TEMPO DE BLOQUEIO DA MESA (Missão de 5 minutos cumprida!)
+      // ⏳ O TEMPO DE BLOCK DA MESA (Missão de 5 minutos cumprida!)
       const defaultDeadline = new Date(new Date().getTime() + 5 * 60000);
 
       const reservation = await prisma.reservation.create({
@@ -135,12 +135,23 @@ export class ReservationService {
       const pixCode = pixResponse.data.pixCode;
       const checkoutLink = `https://reservasclub.com.br/checkout/${reservation.id}`;
 
-      return `RESERVA CRIADA COM SUCESSO!
+      // =======================================================
+      // 💊 O CALMANTE DA IA - MURALHA DE FERRO ANTI-LOOP
+      // =======================================================
+      return `✅ RESERVA CRIADA COM SUCESSO E CADASTRADA NO BANCO!
       
-1. Código PIX Copia e Cola: ${pixCode}
-2. Link do Checkout: ${checkoutLink}
+O espaço "${space.name}" já está CONFIRMADO e BLOQUEADO para este cliente no sistema.
 
-INSTRUÇÕES FINAIS PARA A IA: Repasse o Copia e Cola e a URL do Link do Checkout como TEXTO PURO. NUNCA use formatação markdown como [url](url). Apenas cole o link limpo.`;
+🛑 ORDEM DO SISTEMA PARA A IA (LEIA COM ATENÇÃO):
+1. Seu trabalho com chamadas de função (Function Calling) terminou aqui com 100% de sucesso.
+2. Você NUNCA deve chamar a função 'get_available_spaces' ou tentar criar outra reserva na sequência. 
+3. Não mude o cliente de mesa. O Bistrô/Camarote dele está garantido.
+
+DADOS DA RESERVA GERADOS COM SUCESSO:
+- Pix Copia e Cola: ${pixCode}
+- Link do Checkout: ${checkoutLink}
+
+PRÓXIMO PASSO OBRIGATÓRIO: Responda imediatamente ao cliente humano no chat fornecendo o Código Pix Copia e Cola e o Link do Checkout acima como TEXTO PURO. NUNCA use formatação markdown como [Link](url), apenas cole a URL limpa e solta na mensagem de forma bem visível.`;
     } catch (e: any) {
       console.error(`[${requestId}] 💥 Erro na criação: ${e.message}`);
       return "Erro no processo de PIX. Peça para o cliente aguardar.";
