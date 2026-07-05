@@ -16,7 +16,12 @@ export function buildSystemContext(nightclub: any) {
   const schedule = nightclub?.aiAgent?.promptSchedule || {};
   const mediaLinks = nightclub?.aiAgent?.mediaLinks || {};
 
-  const dataDeHoje = format(new Date(), "dd/MM/yyyy");
+  const dataDeHoje = new Intl.DateTimeFormat("pt-BR", {
+    timeZone: "America/Sao_Paulo",
+    day: "2-digit",
+    month: "2-digit",
+    year: "numeric",
+  }).format(new Date());
 
   // 💰 Tratamento do preço de aniversário
   const precoAniversarioRaw = nightclub?.aiAgent?.birthdayPrice;
