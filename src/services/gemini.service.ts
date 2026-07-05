@@ -54,7 +54,6 @@ export class GeminiService {
                 description: "A data no formato AAAA-MM-DD",
               },
               spaceName: { type: "string" },
-              // 🎂 NOVO PARÂMETRO DA FASE 3:
               isBirthday: {
                 type: "boolean",
                 description:
@@ -69,6 +68,22 @@ export class GeminiService {
               "spaceName",
               "isBirthday", // Exigimos que a IA sempre envie essa flag
             ],
+          },
+        },
+        {
+          name: "check_reservation_status",
+          description:
+            "Consulta se o cliente já tem uma reserva ativa ou paga no sistema. Use SEMPRE que o cliente pedir a confirmação, voucher, ingresso ou perguntar se o pagamento foi aprovado.",
+          parameters: {
+            type: "object",
+            properties: {
+              contact: {
+                type: "string",
+                description:
+                  "O número de telefone ou email do cliente para buscar a reserva.",
+              },
+            },
+            required: ["contact"],
           },
         },
       ],
@@ -152,7 +167,7 @@ export class GeminiService {
             const args: any = call.args;
             let functionResult = "";
 
-            // 🧰 AQUI CHAMAMOS O NOVO SERVIÇO DE RESERVAS
+            // 🧰 AQUI CHAMAMOS O SERVIÇO DE RESERVAS
             if (call.name === "get_available_spaces") {
               functionResult = await this.reservationService.getAvailableSpaces(
                 nightclubId,
@@ -165,6 +180,14 @@ export class GeminiService {
                   nightclubId,
                   args,
                   requestId,
+                  customerPhone,
+                );
+            } else if (call.name === "check_reservation_status") {
+              // 🔍 Executa a busca da reserva existente para evitar Overbooking
+              functionResult =
+                await this.reservationService.checkReservationStatus(
+                  nightclubId,
+                  args.contact,
                   customerPhone,
                 );
             }

@@ -38,6 +38,58 @@ export class ReservationService {
     }
   }
 
+  // =======================================================
+  // 🔍 NOVO BRAÇO DA IA: CONSULTA DE STATUS (ANTI-OVERBOOKING)
+  // =======================================================
+  async checkReservationStatus(
+    nightclubId: string,
+    contact: string,
+    currentPhone: string,
+  ) {
+    try {
+      // Busca a reserva mais recente deste cliente
+      const reservation = await prisma.reservation.findFirst({
+        where: {
+          nightclubId,
+          OR: [
+            { customerPhone: contact },
+            { customerEmail: contact },
+            { customerPhone: currentPhone },
+          ],
+        },
+        orderBy: { createdAt: "desc" },
+        include: { space: true },
+      });
+
+      if (!reservation) {
+        return "Nenhuma reserva encontrada para este cliente. Pode prosseguir com o atendimento ou criar uma nova se ele solicitar.";
+      }
+
+      const checkoutLink = `https://reservasclub.com.br/checkout/${reservation.id}`;
+      const dataFormatada = format(new Date(reservation.date), "dd/MM/yyyy");
+
+      if (
+        reservation.status === "CONFIRMED" ||
+        reservation.status === "CHECKED_IN"
+      ) {
+        return `A reserva do cliente para o espaço "${reservation.space.name}" no dia ${dataFormatada} já está PAGA E CONFIRMADA no sistema!\n\nInstrua o cliente dizendo que já está tudo certo e envie este link para ele acessar o ingresso e o QR Code de entrada: ${checkoutLink}`;
+      }
+
+      if (reservation.status === "PENDING") {
+        return `O cliente tem uma reserva PENDENTE de pagamento para o espaço "${reservation.space.name}" no dia ${dataFormatada}.\n\nNÃO crie uma nova reserva. Diga ao cliente que a mesa dele está garantida e peça para ele finalizar o pagamento através deste link: ${checkoutLink}`;
+      }
+
+      if (reservation.status === "CANCELED") {
+        return "A última reserva deste cliente foi CANCELADA (o prazo de pagamento expirou). Você está livre para oferecer os setores disponíveis e criar uma nova reserva se ele desejar.";
+      }
+
+      return "Reserva encontrada, mas em status desconhecido.";
+    } catch (error: any) {
+      console.error(`Erro ao buscar status da reserva: ${error.message}`);
+      return "Erro ao consultar o banco de dados. Diga ao cliente para aguardar um instante.";
+    }
+  }
+
   async createReservationAndPayment(
     nightclubId: string,
     args: any,
