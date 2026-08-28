@@ -25,11 +25,10 @@ export const criarInstancia = async (
 
     const payload: any = {
       instanceName: instanceName,
-      qrcode: !numberForPairing, // Se enviou número, arranca o QR Code na raiz!
+      qrcode: !numberForPairing,
       integration: "WHATSAPP-BAILEYS",
     };
 
-    // O pulo do gato: já mandar o número e a flag na criação
     if (numberForPairing) {
       payload.number = numberForPairing.replace(/\D/g, "");
       payload.pairingCode = true;
@@ -65,7 +64,7 @@ export const conectarInstancia = async (instanceName: string) => {
 };
 
 // ============================================================================
-// 🔢 NOVA FUNÇÃO: PAIRING CODE (CÓDIGO DE PAREAMENTO)
+// 🔢 PAIRING CODE (CÓDIGO DE PAREAMENTO)
 // ============================================================================
 export const conectarInstanciaComCodigo = async (
   instanceName: string,
@@ -77,7 +76,6 @@ export const conectarInstanciaComCodigo = async (
       `[DEBUG Evolution] Solicitando Pairing Code para: ${instanceName} / Número: ${cleanNumber}`,
     );
 
-    // Tentativa 1: Via Rota Específica GET com query e header
     try {
       const responseNovo = await evolutionClient.get(
         `/instance/connect/${instanceName}?number=${cleanNumber}`,
@@ -97,7 +95,6 @@ export const conectarInstanciaComCodigo = async (
       );
     }
 
-    // Tentativa 2: Via POST Payload de Configuração (Algumas versões exigem assim)
     const response = await evolutionClient.post(
       `/instance/connect/${instanceName}`,
       {
@@ -119,13 +116,14 @@ export const conectarInstanciaComCodigo = async (
 export const abortarConexaoInstancia = async (instanceName: string) => {
   try {
     console.log(
-      `[Evolution API] 🛑 Cortando conexão pendente e deletando zumbi: ${instanceName}`,
+      `[Evolution API] 🛑 Tentando logout limpo para: ${instanceName}`,
     );
-    // 👇 O pulo do gato para a v2: usar /delete em vez de /logout
-    await evolutionClient.delete(`/instance/delete/${instanceName}`);
+    // Tenta primeiro o logout normal da v2 para fechar a sessão do socket sem apagar a instância da base da API
+    await evolutionClient.delete(`/instance/logout/${instanceName}`);
   } catch (error: any) {
+    // Se a instância já estiver desconectada, ignoramos o erro 400 tranquilamente sem quebrar o fluxo
     console.log(
-      `[Evolution API] Deleção processada/ignorada para ${instanceName}.`,
+      `[Evolution API] Logout processado/ignorado para ${instanceName}.`,
     );
   }
 };
@@ -181,7 +179,7 @@ export const enviarMediaWhatsApp = async (
   number: string,
   mediaData: string,
   caption: string = "",
-  type: "image" | "video" = "image", // 👈 Adicionamos o tipo aqui, padrão image
+  type: "image" | "video" = "image",
 ) => {
   try {
     let mediaFormatada = mediaData;
@@ -189,7 +187,6 @@ export const enviarMediaWhatsApp = async (
       mediaData.startsWith("http://") || mediaData.startsWith("https://");
 
     if (!isUrl) {
-      // Se for base64, ajustamos o prefixo conforme o tipo
       const prefix =
         type === "video" ? "data:video/mp4;base64," : "data:image/png;base64,";
       mediaFormatada = mediaData.includes("base64,")
@@ -201,7 +198,7 @@ export const enviarMediaWhatsApp = async (
       `/message/sendMedia/${instanceName}`,
       {
         number: number,
-        mediatype: type, // 👈 Agora ele usa o tipo dinâmico!
+        mediatype: type,
         ...(isUrl
           ? {}
           : { mimetype: type === "video" ? "video/mp4" : "image/png" }),
