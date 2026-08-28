@@ -16,6 +16,9 @@ const evolutionClient = axios.create({
   },
 });
 
+// ⏱️ Função auxiliar para fazer o sistema "respirar"
+const delay = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
+
 export const criarInstancia = async (
   instanceName: string,
   numberForPairing?: string,
@@ -35,12 +38,15 @@ export const criarInstancia = async (
           `[DEBUG Evolution] Instância ${instanceName} já existe. Forçando limpeza para recriar limpa...`,
         );
         await abortarConexaoInstancia(instanceName);
+        console.log(
+          `[DEBUG Evolution] ⏱️ Aguardando 4s para a VPS purgar o Redis...`,
+        );
+        await delay(4000); // 👈 RESPIRAÇÃO AQUI
       }
     } catch (e) {
       // Se der erro ao buscar, significa que ela realmente não existe e pode ser criada
     }
 
-    // Pega a URL do Webhook para injetar no nascimento da instância
     const webhookUrl =
       process.env.WEBHOOK_URL ||
       "http://host.docker.internal:3001/evolution/webhook";
@@ -49,7 +55,6 @@ export const criarInstancia = async (
       instanceName: instanceName,
       qrcode: !numberForPairing,
       integration: "WHATSAPP-BAILEYS",
-      // 👇 INJEÇÃO DIRETA DO WEBHOOK NA CRIAÇÃO 👇
       webhook: {
         enabled: true,
         url: webhookUrl,
@@ -67,13 +72,18 @@ export const criarInstancia = async (
     const response = await evolutionClient.post("/instance/create", payload);
     return response.data;
   } catch (error: any) {
-    // Blindagem extra para erro 403: Se persistir, deleta na marra e recria
+    // Blindagem extra para erro 403: Se persistir, deleta na marra, ESPERA, e recria
     if (error.response?.status === 403) {
       console.log(
         `[DEBUG Evolution] Instância travada (403). Deletando forçado: ${instanceName}`,
       );
       try {
         await evolutionClient.delete(`/instance/delete/${instanceName}`);
+
+        console.log(
+          `[DEBUG Evolution] ⏱️ Aguardando 4s pós-deleção forçada...`,
+        );
+        await delay(4000); // 👈 RESPIRAÇÃO AQUI
 
         const webhookUrl =
           process.env.WEBHOOK_URL ||
@@ -187,7 +197,6 @@ export const abortarConexaoInstancia = async (instanceName: string) => {
     console.log(
       `[Evolution API] 🛑 Executando obliteração segura para: ${instanceName}`,
     );
-    // Delete direto na raiz
     await evolutionClient.delete(`/instance/delete/${instanceName}`);
   } catch (error: any) {
     console.log(
