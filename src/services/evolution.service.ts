@@ -25,27 +25,8 @@ export const criarInstancia = async (
 ) => {
   try {
     console.log(
-      `[DEBUG Evolution] Verificando estado da instância: ${instanceName}`,
+      `[DEBUG Evolution] Tentando criar/reciclar instância: ${instanceName}`,
     );
-
-    // Tenta buscar se a instância já existe para evitar erro 403
-    try {
-      const checkResponse = await evolutionClient.get(
-        `/instance/connectionState/${instanceName}`,
-      );
-      if (checkResponse.data) {
-        console.log(
-          `[DEBUG Evolution] Instância ${instanceName} já existe. Forçando limpeza para recriar limpa...`,
-        );
-        await abortarConexaoInstancia(instanceName);
-        console.log(
-          `[DEBUG Evolution] ⏱️ Aguardando 4s para a VPS purgar o Redis...`,
-        );
-        await delay(4000);
-      }
-    } catch (e) {
-      // Se der erro ao buscar, significa que ela realmente não existe e pode ser criada
-    }
 
     const webhookUrl =
       process.env.WEBHOOK_URL ||
@@ -72,50 +53,23 @@ export const criarInstancia = async (
     const response = await evolutionClient.post("/instance/create", payload);
     return response.data;
   } catch (error: any) {
-    if (error.response?.status === 403) {
+    // ♻️ A MÁGICA DA RECICLAGEM: Se já existe (403), não deleta para não quebrar o banco! Só desloga.
+    const isAlreadyInUse =
+      error.response?.status === 403 ||
+      error.response?.data?.message?.[0]?.includes("already in use");
+
+    if (isAlreadyInUse) {
       console.log(
-        `[DEBUG Evolution] Instância travada (403). Deletando forçado: ${instanceName}`,
+        `[DEBUG Evolution] ♻️ Instância ${instanceName} já existe no banco. Reciclando sessão...`,
       );
       try {
-        await evolutionClient.delete(`/instance/delete/${instanceName}`);
-
-        console.log(
-          `[DEBUG Evolution] ⏱️ Aguardando 4s pós-deleção forçada...`,
-        );
-        await delay(4000);
-
-        const webhookUrl =
-          process.env.WEBHOOK_URL ||
-          "http://host.docker.internal:3001/evolution/webhook";
-
-        const payloadRetry: any = {
-          instanceName: instanceName,
-          qrcode: !numberForPairing,
-          integration: "WHATSAPP-BAILEYS",
-          webhook: {
-            enabled: true,
-            url: webhookUrl,
-            byEvents: false,
-            base64: false,
-            events: ["MESSAGES_UPSERT", "CONNECTION_UPDATE", "QRCODE_UPDATED"],
-          },
-        };
-        if (numberForPairing) {
-          payloadRetry.number = numberForPairing.replace(/\D/g, "");
-          payloadRetry.pairingCode = true;
-        }
-        const retryResponse = await evolutionClient.post(
-          "/instance/create",
-          payloadRetry,
-        );
-        return retryResponse.data;
-      } catch (retryError: any) {
-        console.error(
-          `[Evolution API] Erro crítico ao recriar ${instanceName}:`,
-          retryError.response?.data || retryError.message,
-        );
-        throw retryError;
+        // Fazemos apenas o LOGOUT para derrubar a conexão no WhatsApp sem apagar os históricos do banco
+        await evolutionClient.delete(`/instance/logout/${instanceName}`);
+        await delay(2000); // Dá 2s pro Baileys desligar o motor em paz
+      } catch (e) {
+        // Se der erro no logout, é porque ela já está desconectada. Segue o jogo!
       }
+      return { recycled: true }; // Retorna avisando ao controller que essa instância foi reciclada
     }
 
     console.error(
@@ -151,10 +105,10 @@ export const conectarInstanciaComCodigo = async (
   try {
     const cleanNumber = number.replace(/\D/g, "");
     console.log(
-      `[DEBUG Evolution] Solicitando Pairing Code via GET para: ${instanceName} / Número: ${cleanNumber}`,
+      `[DEBUG Evolution] Solicitando Pairing Code para: ${instanceName} / Número: ${cleanNumber}`,
     );
 
-    // 🔥 ROTA CORRIGIDA: Na v2 é apenas GET com o número na query
+    // 🔥 ROTA CORRIGIDA DA V2: Apenas GET passando o número na query
     const response = await evolutionClient.get(
       `/instance/connect/${instanceName}?number=${cleanNumber}`,
     );
@@ -174,7 +128,8 @@ export const abortarConexaoInstancia = async (instanceName: string) => {
     console.log(
       `[Evolution API] 🛑 Executando obliteração segura para: ${instanceName}`,
     );
-    await evolutionClient.delete(`/instance/delete/${instanceName}`);
+    // Trocado de DELETE para LOGOUT para não estourar a Foreign Key do PostgreSQL na v2
+    await evolutionClient.delete(`/instance/logout/${instanceName}`);
   } catch (error: any) {
     console.log(
       `[Evolution API] Limpeza processada/ignorada para ${instanceName}.`,

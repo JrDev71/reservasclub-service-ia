@@ -3,41 +3,12 @@ import { prisma } from "../lib/prisma";
 import axios from "axios";
 import {
   criarInstancia,
-  configurarWebhook,
   conectarInstancia,
-  abortarConexaoInstancia,
   conectarInstanciaComCodigo,
 } from "../services/evolution.service";
 
 // ============================================================================
-// 🪓 FUNÇÃO AUXILIAR: A VERDADEIRA OBLITERAÇÃO (DELETE DIRETO NA RAIZ)
-// ============================================================================
-const forcarDesconexao = async (instanceName: string) => {
-  const EVOLUTION_API_URL =
-    process.env.EVOLUTION_API_URL || "http://localhost:8080";
-  const EVOLUTION_API_KEY = process.env.EVOLUTION_API_KEY || "";
-
-  try {
-    console.log(
-      `\n[Instance] 🪓 Obliterando a instância na raiz: ${instanceName}`,
-    );
-    await axios.delete(`${EVOLUTION_API_URL}/instance/delete/${instanceName}`, {
-      headers: { apikey: EVOLUTION_API_KEY },
-      timeout: 5000,
-    });
-    console.log(`[Instance] ✅ Instância deletada com sucesso do servidor.`);
-  } catch (error: any) {
-    console.log(
-      `[Instance] ⚠️ Deleção ignorada ou já não existia. Motivo:`,
-      error.response?.data?.message?.[0] || error.message,
-    );
-  }
-
-  await new Promise((resolve) => setTimeout(resolve, 2000));
-};
-
-// ============================================================================
-// 🕰️ FUNÇÃO AUXILIAR: A GUILHOTINA DE 45 SEGUNDOS
+// 🕰️ FUNÇÃO AUXILIAR: A GUILHOTINA SUAVE DE 45 SEGUNDOS
 // ============================================================================
 const iniciarCronometroCancelamento = (instanceName: string) => {
   setTimeout(async () => {
@@ -53,7 +24,17 @@ const iniciarCronometroCancelamento = (instanceName: string) => {
         console.log(
           `[Timer] ⏰ 45s passaram. Conexão não concluída para ${instanceName}.`,
         );
-        await forcarDesconexao(instanceName);
+
+        // Em vez de obliterar e quebrar o DB, a gente só desloga pra parar o motor
+        const EVOLUTION_API_URL =
+          process.env.EVOLUTION_API_URL || "http://localhost:8080";
+        const EVOLUTION_API_KEY = process.env.EVOLUTION_API_KEY || "";
+        await axios
+          .delete(`${EVOLUTION_API_URL}/instance/logout/${instanceName}`, {
+            headers: { apikey: EVOLUTION_API_KEY },
+            timeout: 5000,
+          })
+          .catch(() => {});
 
         await prisma.whatsappInstance.update({
           where: { instanceName },
@@ -89,30 +70,16 @@ export const createNightclubInstance = async (req: Request, res: Response) => {
     const instanceName = `balada_${nightclub.slug}`;
     console.log(`\n[Instance] Iniciando fluxo de Criação: ${instanceName}`);
 
-    let qrCodeBase64 = "";
+    // Cria ou Recicla a instância
+    const evolutionResponse = await criarInstancia(instanceName);
 
-    try {
-      const evolutionResponse = await criarInstancia(instanceName);
-      qrCodeBase64 = evolutionResponse?.qrcode?.base64 || "";
-      console.log(`[Instance] ✅ Criada do zero com sucesso.`);
-    } catch (createError: any) {
-      const errorMessage = createError.response?.data?.message?.[0] || "";
-      const isAlreadyInUse =
-        errorMessage.includes("already in use") ||
-        createError.response?.status === 403;
+    let qrCodeBase64 = evolutionResponse?.qrcode?.base64 || null;
 
-      if (isAlreadyInUse) {
-        console.log(
-          `[Instance] ⚠️ Instância já existe. Derrubando sessão zumbi...`,
-        );
-        await forcarDesconexao(instanceName);
-
-        console.log(`[Instance] 🔄 Recriando instância limpa...`);
-        const retryResponse = await criarInstancia(instanceName);
-        qrCodeBase64 = retryResponse?.qrcode?.base64 || "";
-      } else {
-        throw createError;
-      }
+    // Se ela foi reciclada, o QR Code não vem na criação, temos que buscar manual na rota connect
+    if (evolutionResponse?.recycled || !qrCodeBase64) {
+      console.log(`[Instance] Buscando QR Code na instância reciclada...`);
+      const connectRes = await conectarInstancia(instanceName);
+      qrCodeBase64 = connectRes?.base64 || connectRes?.qrcode?.base64 || null;
     }
 
     const whatsappInstance = await prisma.whatsappInstance.upsert({
@@ -160,12 +127,17 @@ export const connectNightclubInstance = async (req: Request, res: Response) => {
       `\n[Instance] 🔄 Iniciando Fluxo de QR Code para: ${instanceName}`,
     );
 
-    await forcarDesconexao(instanceName);
-
+    // Cria ou Recicla a instância
     const evolutionResponse = await criarInstancia(instanceName);
 
-    const qrCodeBase64 =
-      evolutionResponse?.base64 || evolutionResponse?.qrcode?.base64 || null;
+    let qrCodeBase64 = evolutionResponse?.qrcode?.base64 || null;
+
+    if (evolutionResponse?.recycled || !qrCodeBase64) {
+      console.log(`[Instance] Buscando QR Code na instância reciclada...`);
+      const connectRes = await conectarInstancia(instanceName);
+      qrCodeBase64 = connectRes?.base64 || connectRes?.qrcode?.base64 || null;
+    }
+
     const initialStatus = qrCodeBase64 ? "QRCODE" : "CONNECTING";
 
     const whatsappInstance = await prisma.whatsappInstance.upsert({
@@ -210,20 +182,18 @@ export const connectNightclubWithCode = async (req: Request, res: Response) => {
       `\n[Instance] 🔢 Iniciando Pairing Code para: ${instanceName} / Número: ${number}`,
     );
 
-    // 1. Oblitera qualquer sessão antiga
-    await forcarDesconexao(instanceName);
-
-    // 2. CRIA DO ZERO enviando o número no payload (o webhook já é injetado lá)
+    // Cria ou Recicla a instância enviando o número no payload
     const evolutionResponse = await criarInstancia(instanceName, number);
 
-    // 3. Captura o código numérico no retorno da criação (caso venha rápido)
+    // Captura o código numérico no retorno da criação (caso venha rápido)
     let pairingCode =
       evolutionResponse?.pairingCode ||
       evolutionResponse?.code ||
-      evolutionResponse?.qrcode?.code;
+      evolutionResponse?.qrcode?.code ||
+      null;
 
     // 🔥 4. A RESPIRAÇÃO: Se não vier o código na hora, espera o Baileys esquentar
-    if (!pairingCode) {
+    if (evolutionResponse?.recycled || !pairingCode) {
       console.log(
         "[Instance] ⏱️ Aguardando motor do Baileys iniciar (5s) para gerar o código...",
       );
@@ -236,7 +206,7 @@ export const connectNightclubWithCode = async (req: Request, res: Response) => {
       pairingCode =
         codeRes?.pairingCode || codeRes?.code || codeRes?.qrcode?.code;
 
-      // Se a Evolution estiver de mau humor, tenta uma última vez depois de mais 3 segundos
+      // Se a Evolution estiver lenta, tenta uma última vez depois de mais 3 segundos
       if (!pairingCode) {
         console.log("[Instance] ⏱️ Segunda tentativa de busca (3s)...");
         await new Promise((resolve) => setTimeout(resolve, 3000));
