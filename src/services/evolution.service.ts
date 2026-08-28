@@ -41,7 +41,7 @@ export const criarInstancia = async (
         console.log(
           `[DEBUG Evolution] ⏱️ Aguardando 4s para a VPS purgar o Redis...`,
         );
-        await delay(4000); // 👈 RESPIRAÇÃO AQUI
+        await delay(4000);
       }
     } catch (e) {
       // Se der erro ao buscar, significa que ela realmente não existe e pode ser criada
@@ -72,7 +72,6 @@ export const criarInstancia = async (
     const response = await evolutionClient.post("/instance/create", payload);
     return response.data;
   } catch (error: any) {
-    // Blindagem extra para erro 403: Se persistir, deleta na marra, ESPERA, e recria
     if (error.response?.status === 403) {
       console.log(
         `[DEBUG Evolution] Instância travada (403). Deletando forçado: ${instanceName}`,
@@ -83,7 +82,7 @@ export const criarInstancia = async (
         console.log(
           `[DEBUG Evolution] ⏱️ Aguardando 4s pós-deleção forçada...`,
         );
-        await delay(4000); // 👈 RESPIRAÇÃO AQUI
+        await delay(4000);
 
         const webhookUrl =
           process.env.WEBHOOK_URL ||
@@ -152,34 +151,12 @@ export const conectarInstanciaComCodigo = async (
   try {
     const cleanNumber = number.replace(/\D/g, "");
     console.log(
-      `[DEBUG Evolution] Solicitando Pairing Code para: ${instanceName} / Número: ${cleanNumber}`,
+      `[DEBUG Evolution] Solicitando Pairing Code via GET para: ${instanceName} / Número: ${cleanNumber}`,
     );
 
-    try {
-      const responseNovo = await evolutionClient.get(
-        `/instance/connect/${instanceName}?number=${cleanNumber}`,
-        {
-          headers: {
-            "Content-Type": "application/json",
-            reject_qrcode: "true",
-          },
-        },
-      );
-      if (responseNovo.data?.code || responseNovo.data?.pairingCode) {
-        return responseNovo.data;
-      }
-    } catch (e) {
-      console.log(
-        "[DEBUG Evolution] Rota GET /connect não retornou o código, tentando POST...",
-      );
-    }
-
-    const response = await evolutionClient.post(
-      `/instance/connect/${instanceName}`,
-      {
-        number: cleanNumber,
-        pairingCode: true,
-      },
+    // 🔥 ROTA CORRIGIDA: Na v2 é apenas GET com o número na query
+    const response = await evolutionClient.get(
+      `/instance/connect/${instanceName}?number=${cleanNumber}`,
     );
 
     return response.data;

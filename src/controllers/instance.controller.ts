@@ -21,21 +21,18 @@ const forcarDesconexao = async (instanceName: string) => {
     console.log(
       `\n[Instance] 🪓 Obliterando a instância na raiz: ${instanceName}`,
     );
-    // Na v2, a única forma de garantir a limpeza é DELETAR a instância do banco da API
     await axios.delete(`${EVOLUTION_API_URL}/instance/delete/${instanceName}`, {
       headers: { apikey: EVOLUTION_API_KEY },
       timeout: 5000,
     });
     console.log(`[Instance] ✅ Instância deletada com sucesso do servidor.`);
   } catch (error: any) {
-    // Se der 404, ótimo, ela já não existia. Segue o jogo.
     console.log(
       `[Instance] ⚠️ Deleção ignorada ou já não existia. Motivo:`,
       error.response?.data?.message?.[0] || error.message,
     );
   }
 
-  // Dá 2 segundos de respiro pro Redis limpar o cache interno
   await new Promise((resolve) => setTimeout(resolve, 2000));
 };
 
@@ -56,7 +53,6 @@ const iniciarCronometroCancelamento = (instanceName: string) => {
         console.log(
           `[Timer] ⏰ 45s passaram. Conexão não concluída para ${instanceName}.`,
         );
-        // Usa a nossa nova voadora para varrer o lixo
         await forcarDesconexao(instanceName);
 
         await prisma.whatsappInstance.update({
@@ -111,7 +107,6 @@ export const createNightclubInstance = async (req: Request, res: Response) => {
         );
         await forcarDesconexao(instanceName);
 
-        // O SEGREDO AQUI: Como nós deletamos a instância, temos que CRIAR ela de novo, e não "conectar"
         console.log(`[Instance] 🔄 Recriando instância limpa...`);
         const retryResponse = await criarInstancia(instanceName);
         qrCodeBase64 = retryResponse?.qrcode?.base64 || "";
@@ -119,11 +114,6 @@ export const createNightclubInstance = async (req: Request, res: Response) => {
         throw createError;
       }
     }
-
-    const webhookUrl =
-      process.env.WEBHOOK_URL ||
-      "http://host.docker.internal:3001/evolution/webhook";
-    await configurarWebhook(instanceName, webhookUrl);
 
     const whatsappInstance = await prisma.whatsappInstance.upsert({
       where: { instanceName },
@@ -170,16 +160,9 @@ export const connectNightclubInstance = async (req: Request, res: Response) => {
       `\n[Instance] 🔄 Iniciando Fluxo de QR Code para: ${instanceName}`,
     );
 
-    // Mata qualquer rastro anterior
     await forcarDesconexao(instanceName);
 
-    // Cria zerado de novo
     const evolutionResponse = await criarInstancia(instanceName);
-
-    const webhookUrl =
-      process.env.WEBHOOK_URL ||
-      "http://host.docker.internal:3001/evolution/webhook";
-    await configurarWebhook(instanceName, webhookUrl);
 
     const qrCodeBase64 =
       evolutionResponse?.base64 || evolutionResponse?.qrcode?.base64 || null;
@@ -227,31 +210,40 @@ export const connectNightclubWithCode = async (req: Request, res: Response) => {
       `\n[Instance] 🔢 Iniciando Pairing Code para: ${instanceName} / Número: ${number}`,
     );
 
-    // 1. Oblitera qualquer sessão antiga para garantir injeção do número na raiz
+    // 1. Oblitera qualquer sessão antiga
     await forcarDesconexao(instanceName);
 
-    // 2. CRIA DO ZERO já enviando o número (Evolution v2 exige assim para código numérico)
+    // 2. CRIA DO ZERO enviando o número no payload (o webhook já é injetado lá)
     const evolutionResponse = await criarInstancia(instanceName, number);
 
-    // 3. Configura o Webhook na instância nova
-    const webhookUrl =
-      process.env.WEBHOOK_URL ||
-      "http://host.docker.internal:3001/evolution/webhook";
-    await configurarWebhook(instanceName, webhookUrl);
-
-    // 4. Captura o código numérico no retorno da criação
+    // 3. Captura o código numérico no retorno da criação (caso venha rápido)
     let pairingCode =
       evolutionResponse?.pairingCode ||
       evolutionResponse?.code ||
       evolutionResponse?.qrcode?.code;
 
-    // 5. Fallback de garantia: Se a criação não devolver o código na hora, força a busca manual
+    // 🔥 4. A RESPIRAÇÃO: Se não vier o código na hora, espera o Baileys esquentar
     if (!pairingCode) {
       console.log(
-        "[Instance] Código não retornou no payload principal, forçando busca...",
+        "[Instance] ⏱️ Aguardando motor do Baileys iniciar (5s) para gerar o código...",
+      );
+      await new Promise((resolve) => setTimeout(resolve, 5000));
+
+      console.log(
+        "[Instance] Forçando busca manual do código após aquecimento...",
       );
       const codeRes = await conectarInstanciaComCodigo(instanceName, number);
-      pairingCode = codeRes?.pairingCode || codeRes?.code;
+      pairingCode =
+        codeRes?.pairingCode || codeRes?.code || codeRes?.qrcode?.code;
+
+      // Se a Evolution estiver de mau humor, tenta uma última vez depois de mais 3 segundos
+      if (!pairingCode) {
+        console.log("[Instance] ⏱️ Segunda tentativa de busca (3s)...");
+        await new Promise((resolve) => setTimeout(resolve, 3000));
+        const codeRes2 = await conectarInstanciaComCodigo(instanceName, number);
+        pairingCode =
+          codeRes2?.pairingCode || codeRes2?.code || codeRes2?.qrcode?.code;
+      }
     }
 
     if (!pairingCode) {
@@ -275,7 +267,7 @@ export const connectNightclubWithCode = async (req: Request, res: Response) => {
     iniciarCronometroCancelamento(instanceName);
 
     console.log(
-      `[Instance] ✅ Código de Pareamento finalizado: ${pairingCode}`,
+      `[Instance] ✅ Código de Pareamento finalizado e pronto: ${pairingCode}`,
     );
 
     return res.status(200).json({ success: true, code: pairingCode });
