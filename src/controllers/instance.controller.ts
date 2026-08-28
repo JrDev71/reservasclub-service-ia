@@ -10,7 +10,7 @@ import {
 } from "../services/evolution.service";
 
 // ============================================================================
-// 🪓 FUNÇÃO AUXILIAR: A VOADORA DE LOGOUT (DETALHADA - ORIGINAL)
+// 🪓 FUNÇÃO AUXILIAR: A VERDADEIRA OBLITERAÇÃO (DELETE DIRETO NA RAIZ)
 // ============================================================================
 const forcarDesconexao = async (instanceName: string) => {
   const EVOLUTION_API_URL =
@@ -19,70 +19,28 @@ const forcarDesconexao = async (instanceName: string) => {
 
   try {
     console.log(
-      `\n[Instance] 🪓 1. Tentando Logout normal na Evolution: ${instanceName}`,
+      `\n[Instance] 🪓 Obliterando a instância na raiz: ${instanceName}`,
     );
-    await axios.delete(`${EVOLUTION_API_URL}/instance/logout/${instanceName}`, {
+    // Na v2, a única forma de garantir a limpeza é DELETAR a instância do banco da API
+    await axios.delete(`${EVOLUTION_API_URL}/instance/delete/${instanceName}`, {
       headers: { apikey: EVOLUTION_API_KEY },
       timeout: 5000,
     });
-    console.log(`[Instance] ✅ Logout normal funcionou.`);
+    console.log(`[Instance] ✅ Instância deletada com sucesso do servidor.`);
   } catch (error: any) {
-    const data = error.response?.data;
+    // Se der 404, ótimo, ela já não existia. Segue o jogo.
     console.log(
-      `[Instance] ⚠️ Logout normal falhou. Motivo real:`,
-      JSON.stringify(data, null, 2),
-    );
-
-    try {
-      console.log(`\n[Instance] 🪓 2. Tentando Logout Forçado com payload...`);
-      await axios.delete(
-        `${EVOLUTION_API_URL}/instance/logout/${instanceName}`,
-        {
-          headers: {
-            apikey: EVOLUTION_API_KEY,
-            "Content-Type": "application/json",
-          },
-          data: { instanceName, force: true },
-          timeout: 5000,
-        },
-      );
-      console.log(`[Instance] ✅ Logout Forçado funcionou.`);
-    } catch (e2: any) {
-      console.log(
-        `[Instance] ⚠️ Logout Forçado falhou. Motivo:`,
-        JSON.stringify(e2.response?.data, null, 2),
-      );
-    }
-  }
-
-  // 🔄 RESTART SALVADOR: Reinicia o motor do Baileys pra ele acordar pra vida e derrubar o Zumbi
-  try {
-    console.log(
-      `\n[Instance] 🔄 3. Reiniciando a instância no servidor para limpar cache...`,
-    );
-    await axios.put(
-      `${EVOLUTION_API_URL}/instance/restart/${instanceName}`,
-      {},
-      {
-        headers: { apikey: EVOLUTION_API_KEY },
-        timeout: 5000,
-      },
-    );
-    console.log(
-      `[Instance] ✅ Restart enviado. Aguardando 3s pro motor reiniciar limpo...`,
-    );
-  } catch (e3: any) {
-    console.log(
-      `[Instance] ⚠️ Restart falhou. Motivo:`,
-      JSON.stringify(e3.response?.data, null, 2),
+      `[Instance] ⚠️ Deleção ignorada ou já não existia. Motivo:`,
+      error.response?.data?.message?.[0] || error.message,
     );
   }
 
-  await new Promise((resolve) => setTimeout(resolve, 3000));
+  // Dá 2 segundos de respiro pro Redis limpar o cache interno
+  await new Promise((resolve) => setTimeout(resolve, 2000));
 };
 
 // ============================================================================
-// 🕰️ FUNÇÃO AUXILIAR: A GUILHOTINA DE 45 SEGUNDOS (ORIGINAL)
+// 🕰️ FUNÇÃO AUXILIAR: A GUILHOTINA DE 45 SEGUNDOS
 // ============================================================================
 const iniciarCronometroCancelamento = (instanceName: string) => {
   setTimeout(async () => {
@@ -98,7 +56,9 @@ const iniciarCronometroCancelamento = (instanceName: string) => {
         console.log(
           `[Timer] ⏰ 45s passaram. Conexão não concluída para ${instanceName}.`,
         );
-        await abortarConexaoInstancia(instanceName);
+        // Usa a nossa nova voadora para varrer o lixo
+        await forcarDesconexao(instanceName);
+
         await prisma.whatsappInstance.update({
           where: { instanceName },
           data: { status: "DISCONNECTED", qrCode: null },
@@ -117,10 +77,7 @@ const iniciarCronometroCancelamento = (instanceName: string) => {
 };
 
 // ============================================================================
-// 1. CRIAÇÃO DE NOVA INSTÂNCIA (A primeira vez)
-// ============================================================================
-// ============================================================================
-// 1. CRIAÇÃO DE NOVA INSTÂNCIA (A primeira vez ou Troca de Número)
+// 1. CRIAÇÃO DE NOVA INSTÂNCIA (QR Code Padrão)
 // ============================================================================
 export const createNightclubInstance = async (req: Request, res: Response) => {
   try {
@@ -134,17 +91,15 @@ export const createNightclubInstance = async (req: Request, res: Response) => {
       return res.status(404).json({ error: "Balada não encontrada." });
 
     const instanceName = `balada_${nightclub.slug}`;
-    console.log(`[Instance] Iniciando fluxo na Evolution API: ${instanceName}`);
+    console.log(`\n[Instance] Iniciando fluxo de Criação: ${instanceName}`);
 
     let qrCodeBase64 = "";
 
     try {
-      // Tenta criar a instância do zero
       const evolutionResponse = await criarInstancia(instanceName);
       qrCodeBase64 = evolutionResponse?.qrcode?.base64 || "";
-      console.log(`[Instance] Criada do zero com sucesso.`);
+      console.log(`[Instance] ✅ Criada do zero com sucesso.`);
     } catch (createError: any) {
-      // 🛑 INTERCEPTAÇÃO: Se a Evolution disser que já existe (Erro 403 / "already in use")
       const errorMessage = createError.response?.data?.message?.[0] || "";
       const isAlreadyInUse =
         errorMessage.includes("already in use") ||
@@ -152,17 +107,15 @@ export const createNightclubInstance = async (req: Request, res: Response) => {
 
       if (isAlreadyInUse) {
         console.log(
-          `[Instance] Instância já existe. Derrubando sessão anterior para novo QR Code...`,
+          `[Instance] ⚠️ Instância já existe. Derrubando sessão zumbi...`,
         );
-        // Aciona a sua "Voadora de Logout" para limpar o número antigo
         await forcarDesconexao(instanceName);
 
-        // Agora que limpou, pede para a Evolution gerar um novo QR Code de conexão
-        const connectResponse = await conectarInstancia(instanceName);
-        qrCodeBase64 =
-          connectResponse?.base64 || connectResponse?.qrcode?.base64 || "";
+        // O SEGREDO AQUI: Como nós deletamos a instância, temos que CRIAR ela de novo, e não "conectar"
+        console.log(`[Instance] 🔄 Recriando instância limpa...`);
+        const retryResponse = await criarInstancia(instanceName);
+        qrCodeBase64 = retryResponse?.qrcode?.base64 || "";
       } else {
-        // Se for outro tipo de erro fatal, aborta tudo.
         throw createError;
       }
     }
@@ -197,6 +150,7 @@ export const createNightclubInstance = async (req: Request, res: Response) => {
       .json({ error: "Erro ao criar ou resetar a instância." });
   }
 };
+
 // ============================================================================
 // 2. RECONEXÃO / FALLBACK (VIA QR CODE TRADICIONAL)
 // ============================================================================
@@ -216,14 +170,16 @@ export const connectNightclubInstance = async (req: Request, res: Response) => {
       `\n[Instance] 🔄 Iniciando Fluxo de QR Code para: ${instanceName}`,
     );
 
+    // Mata qualquer rastro anterior
     await forcarDesconexao(instanceName);
+
+    // Cria zerado de novo
+    const evolutionResponse = await criarInstancia(instanceName);
 
     const webhookUrl =
       process.env.WEBHOOK_URL ||
       "http://host.docker.internal:3001/evolution/webhook";
     await configurarWebhook(instanceName, webhookUrl);
-
-    const evolutionResponse = await conectarInstancia(instanceName);
 
     const qrCodeBase64 =
       evolutionResponse?.base64 || evolutionResponse?.qrcode?.base64 || null;
@@ -252,7 +208,7 @@ export const connectNightclubInstance = async (req: Request, res: Response) => {
 };
 
 // ============================================================================
-// 3. 🔢 RECONEXÃO VIA CÓDIGO DE PAREAMENTO (NOVO MÉTODO)
+// 3. 🔢 RECONEXÃO VIA CÓDIGO DE PAREAMENTO
 // ============================================================================
 export const connectNightclubWithCode = async (req: Request, res: Response) => {
   try {
@@ -271,51 +227,37 @@ export const connectNightclubWithCode = async (req: Request, res: Response) => {
       `\n[Instance] 🔢 Iniciando Pairing Code para: ${instanceName} / Número: ${number}`,
     );
 
+    // 1. Oblitera qualquer sessão antiga para garantir injeção do número na raiz
     await forcarDesconexao(instanceName);
 
+    // 2. CRIA DO ZERO já enviando o número (Evolution v2 exige assim para código numérico)
+    const evolutionResponse = await criarInstancia(instanceName, number);
+
+    // 3. Configura o Webhook na instância nova
     const webhookUrl =
       process.env.WEBHOOK_URL ||
       "http://host.docker.internal:3001/evolution/webhook";
     await configurarWebhook(instanceName, webhookUrl);
 
-    const evolutionResponse = await conectarInstanciaComCodigo(
-      instanceName,
-      number,
-    );
-    console.log(
-      `[DEBUG] Resposta Bruta da Evolution:`,
-      JSON.stringify(evolutionResponse),
-    );
-
-    if (
-      evolutionResponse?.instance?.state === "open" ||
-      evolutionResponse?.state === "open"
-    ) {
-      throw new Error(
-        "A Evolution travou a sessão no estado 'open'. O cache está sendo limpo. Tente gerar novamente em 5 segundos.",
-      );
-    }
-
-    // 🛑 A SOLUÇÃO: Pega o pairingCode PRIMEIRO!
+    // 4. Captura o código numérico no retorno da criação
     let pairingCode =
       evolutionResponse?.pairingCode ||
-      evolutionResponse?.pairingCodeResponse?.code;
+      evolutionResponse?.code ||
+      evolutionResponse?.qrcode?.code;
 
-    // Se ele não achou o pairingCode, mas existe a propriedade 'code' com tamanho pequeno (8 dígitos), aí ele usa.
-    if (
-      !pairingCode &&
-      evolutionResponse?.code &&
-      evolutionResponse.code.length < 20
-    ) {
-      pairingCode = evolutionResponse.code;
+    // 5. Fallback de garantia: Se a criação não devolver o código na hora, força a busca manual
+    if (!pairingCode) {
+      console.log(
+        "[Instance] Código não retornou no payload principal, forçando busca...",
+      );
+      const codeRes = await conectarInstanciaComCodigo(instanceName, number);
+      pairingCode = codeRes?.pairingCode || codeRes?.code;
     }
 
     if (!pairingCode) {
-      console.error(
-        `[CRÍTICO] A Evolution devolveu a matriz do QR Code mas escondeu os 8 dígitos!`,
-      );
+      console.error(`[CRÍTICO] Evolution não gerou o código de 8 dígitos!`);
       throw new Error(
-        "Evolution não retornou o código de pareamento. Verifique se o número possui WhatsApp ativo e se o DDD está correto.",
+        "Evolution não retornou o código. Verifique se o número possui WhatsApp ativo e se o DDD está correto.",
       );
     }
 
@@ -332,15 +274,15 @@ export const connectNightclubWithCode = async (req: Request, res: Response) => {
 
     iniciarCronometroCancelamento(instanceName);
 
-    console.log(`[Instance] ✅ Código de Pareamento gerado: ${pairingCode}`);
+    console.log(
+      `[Instance] ✅ Código de Pareamento finalizado: ${pairingCode}`,
+    );
 
     return res.status(200).json({ success: true, code: pairingCode });
   } catch (error: any) {
     console.error("[Instance Connect Code Error]", error.message || error);
     return res.status(500).json({
-      error:
-        error.message ||
-        "Erro ao gerar código de pareamento. Verifique o console.",
+      error: error.message || "Erro ao gerar código de pareamento.",
     });
   }
 };
