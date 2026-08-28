@@ -25,7 +25,7 @@ export const criarInstancia = async (
       `[DEBUG Evolution] Verificando estado da instância: ${instanceName}`,
     );
 
-    // Blindagem: Tenta buscar se a instância já existe para evitar erro 403
+    // Tenta buscar se a instância já existe para evitar erro 403
     try {
       const checkResponse = await evolutionClient.get(
         `/instance/connectionState/${instanceName}`,
@@ -40,10 +40,23 @@ export const criarInstancia = async (
       // Se der erro ao buscar, significa que ela realmente não existe e pode ser criada
     }
 
+    // Pega a URL do Webhook para injetar no nascimento da instância
+    const webhookUrl =
+      process.env.WEBHOOK_URL ||
+      "http://host.docker.internal:3001/evolution/webhook";
+
     const payload: any = {
       instanceName: instanceName,
       qrcode: !numberForPairing,
       integration: "WHATSAPP-BAILEYS",
+      // 👇 INJEÇÃO DIRETA DO WEBHOOK NA CRIAÇÃO 👇
+      webhook: {
+        enabled: true,
+        url: webhookUrl,
+        byEvents: false,
+        base64: false,
+        events: ["MESSAGES_UPSERT", "CONNECTION_UPDATE", "QRCODE_UPDATED"],
+      },
     };
 
     if (numberForPairing) {
@@ -61,10 +74,22 @@ export const criarInstancia = async (
       );
       try {
         await evolutionClient.delete(`/instance/delete/${instanceName}`);
+
+        const webhookUrl =
+          process.env.WEBHOOK_URL ||
+          "http://host.docker.internal:3001/evolution/webhook";
+
         const payloadRetry: any = {
           instanceName: instanceName,
           qrcode: !numberForPairing,
           integration: "WHATSAPP-BAILEYS",
+          webhook: {
+            enabled: true,
+            url: webhookUrl,
+            byEvents: false,
+            base64: false,
+            events: ["MESSAGES_UPSERT", "CONNECTION_UPDATE", "QRCODE_UPDATED"],
+          },
         };
         if (numberForPairing) {
           payloadRetry.number = numberForPairing.replace(/\D/g, "");
@@ -160,18 +185,14 @@ export const conectarInstanciaComCodigo = async (
 export const abortarConexaoInstancia = async (instanceName: string) => {
   try {
     console.log(
-      `[Evolution API] 🛑 Executando limpeza segura para: ${instanceName}`,
+      `[Evolution API] 🛑 Executando obliteração segura para: ${instanceName}`,
     );
-    await evolutionClient.delete(`/instance/logout/${instanceName}`);
+    // Delete direto na raiz
+    await evolutionClient.delete(`/instance/delete/${instanceName}`);
   } catch (error: any) {
-    // Se o logout falhar porque já está desconectada, tenta deletar a instância para evitar lixo
-    try {
-      await evolutionClient.delete(`/instance/delete/${instanceName}`);
-    } catch (delError) {
-      console.log(
-        `[Evolution API] Limpeza processada/ignorada para ${instanceName}.`,
-      );
-    }
+    console.log(
+      `[Evolution API] Limpeza processada/ignorada para ${instanceName}.`,
+    );
   }
 };
 
