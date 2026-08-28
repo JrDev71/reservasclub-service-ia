@@ -16,7 +16,6 @@ const PORT = process.env.PORT || 3001;
 // ============================================================================
 // 🚪 ABRINDO OS PORTÕES COM BODY-PARSER: Forçando o limite absurdo ANTES de tudo
 // ============================================================================
-// Isso garante que se a Evolution mandar 100MB de contatos num payload só, a gente aceita.
 app.use(bodyParser.json({ limit: "100mb" }));
 app.use(
   bodyParser.urlencoded({
@@ -38,7 +37,8 @@ app.get("/health", (req: Request, res: Response) => {
 });
 
 // Registrar Rotas
-app.use("/webhooks", webhookRoutes);
+// 👇 AQUI A CORREÇÃO: Mudamos de "/webhooks" para "/evolution"
+app.use("/evolution", webhookRoutes);
 app.use("/instances", instanceRoutes);
 app.use("/whatsapp", whatsappRoutes);
 
