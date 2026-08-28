@@ -119,12 +119,13 @@ export const conectarInstanciaComCodigo = async (
 export const abortarConexaoInstancia = async (instanceName: string) => {
   try {
     console.log(
-      `[Evolution API] 🛑 Cortando conexão pendente (Logout) para: ${instanceName}`,
+      `[Evolution API] 🛑 Cortando conexão pendente e deletando zumbi: ${instanceName}`,
     );
-    await evolutionClient.delete(`/instance/logout/${instanceName}`);
+    // 👇 O pulo do gato para a v2: usar /delete em vez de /logout
+    await evolutionClient.delete(`/instance/delete/${instanceName}`);
   } catch (error: any) {
     console.log(
-      `[Evolution API] Logout processado/ignorado para ${instanceName}.`,
+      `[Evolution API] Deleção processada/ignorada para ${instanceName}.`,
     );
   }
 };
