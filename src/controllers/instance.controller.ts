@@ -8,7 +8,7 @@ import {
 } from "../services/evolution.service";
 
 // ============================================================================
-// 🕰️ FUNÇÃO AUXILIAR: A GUILHOTINA SUAVE DE 45 SEGUNDOS
+// 🕰️ FUNÇÃO AUXILIAR: A GUILHOTINA SUAVE DE 2 MINUTOS (120 SEGUNDOS)
 // ============================================================================
 const iniciarCronometroCancelamento = (instanceName: string) => {
   setTimeout(async () => {
@@ -22,7 +22,7 @@ const iniciarCronometroCancelamento = (instanceName: string) => {
         (instancia.status === "QRCODE" || instancia.status === "CONNECTING")
       ) {
         console.log(
-          `[Timer] ⏰ 45s passaram. Conexão não concluída para ${instanceName}.`,
+          `[Timer] ⏰ 2 minutos passaram. Conexão não concluída para ${instanceName}.`,
         );
 
         // Em vez de obliterar e quebrar o DB, a gente só desloga pra parar o motor
@@ -50,7 +50,7 @@ const iniciarCronometroCancelamento = (instanceName: string) => {
         error.message,
       );
     }
-  }, 45000);
+  }, 120000); // 👈 TEMPO ATUALIZADO AQUI (120000 ms = 2 minutos)
 };
 
 // ============================================================================
