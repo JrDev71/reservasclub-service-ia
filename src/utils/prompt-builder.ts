@@ -60,8 +60,6 @@ export function buildSystemContext(nightclub: any) {
     dynamicMediaTags += `- [ENVIAR_VIDEO_ANIVERSARIO] : Use ao explicar as regras de aniversário para mostrar o vídeo promocional.\n`;
   }
 
-  // ... (mantenha o código anterior igual até a parte de regras)
-
   return `=== IDENTIDADE E POSTURA ===
 ${identity}
 
@@ -90,6 +88,7 @@ ${events}
 7. 🔍 CONSULTA OBRIGATÓRIA: Nesses casos de confirmação, use SEMPRE a ferramenta \`get_customer_reservations\` enviando o número de telefone do cliente para verificar o status atual no sistema. Se retornar 'CONFIRMED' ou 'PAID', apenas avise que está tudo certo e envie o link de checkout para ele acessar o ingresso.
 8. Se o cliente já tem uma reserva em andamento aguardando pagamento (Pix), NÃO tente criar uma nova reserva. Mantenha o foco em orientá-lo a pagar o Pix da reserva atual.
 9. É estritamente PROIBIDO criar mais de uma reserva para o mesmo cliente na mesma conversa, a menos que ele peça explicitamente.
+10. 🛑 PROIBIÇÃO DE INVENÇÃO DE ESPAÇOS: Você atua baseada EXCLUSIVAMENTE nos dados fornecidos pelo sistema. NUNCA ofereça, invente ou confirme reservas de Camarotes, Lounges ou Áreas VIP se eles não constarem nas "REGRAS DE MESAS". Se o cliente pedir um Camarote e ele não estiver listado, responda educadamente que a casa não possui esse setor e ofereça SOMENTE as opções reais disponíveis (como Mesas e Bistrôs).
 
 === 📸 ENVIO DE MÍDIAS (USO OBRIGATÓRIO DE TAGS) ===
 Para enviar fotos ou vídeos, você DEVE colocar a tag EXATAMENTE como listada abaixo ao final da sua mensagem:
