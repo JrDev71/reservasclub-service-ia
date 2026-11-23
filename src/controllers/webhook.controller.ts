@@ -12,6 +12,50 @@ const processedMessages = new Set<string>();
 // =======================================================================
 const statusCache = new Map<string, { state: string; time: number }>();
 const lastQrCodeUpdate = new Map<string, number>();
+const lastMainApiNotify = new Map<string, { status: string; time: number }>();
+
+const MAIN_API_NOTIFY_COOLDOWN_MS = 15000;
+
+async function notifyMainApiStatus(
+  instanceName: string,
+  status: string,
+  force = false,
+): Promise<void> {
+  if (!instanceName || !process.env.MAIN_API_URL) return;
+
+  const now = Date.now();
+  const prev = lastMainApiNotify.get(instanceName);
+
+  if (
+    !force &&
+    prev &&
+    prev.status === status &&
+    now - prev.time < MAIN_API_NOTIFY_COOLDOWN_MS
+  ) {
+    return;
+  }
+
+  lastMainApiNotify.set(instanceName, { status, time: now });
+
+  try {
+    await axios.patch(
+      `${process.env.MAIN_API_URL}/nightclubs/instance/status`,
+      { instanceName, status },
+      {
+        headers: { "x-internal-key": process.env.MAIN_API_TOKEN },
+        timeout: 8000,
+      },
+    );
+  } catch (err: any) {
+    const httpStatus = err?.response?.status;
+    console.error(
+      `❌ Erro ao avisar Main API (${instanceName} -> ${status})${
+        httpStatus ? ` [HTTP ${httpStatus}]` : ""
+      }:`,
+      err?.response?.data || err?.message || err,
+    );
+  }
+}
 
 // 🗺️ DICIONÁRIO DE TAGS -> CHAVES DO BANCO DE DADOS
 const tagToDbKeyMap: Record<string, string> = {
@@ -27,14 +71,16 @@ const tagToDbKeyMap: Record<string, string> = {
 };
 
 export const handleEvolutionWebhook = async (req: Request, res: Response) => {
-  const body = req.body;
+  const body = req.body || {};
   const eventName = String(
-    body.event || (body.events && body.events[0]),
+    body.event || (body.events && body.events[0]) || "",
   ).toLowerCase();
-  const instanceName = body.instance;
+  const instanceName = String(body.instance || "").trim();
 
   // Responder 200 OK IMEDIATAMENTE para a Evolution não dar timeout e parar de spammar
   res.status(200).send("Processing");
+
+  if (!instanceName) return;
 
   // Apenas avisa que o evento bateu, sem cuspir o payload inteiro
   if (eventName !== "messages.upsert") {
@@ -47,7 +93,7 @@ export const handleEvolutionWebhook = async (req: Request, res: Response) => {
     // =======================================================================
     if (eventName === "connection.update") {
       const status = String(
-        body.data?.state || body.data?.status,
+        body.data?.state || body.data?.status || "",
       ).toLowerCase();
 
       if (!status || status === "undefined") return;
@@ -102,16 +148,7 @@ export const handleEvolutionWebhook = async (req: Request, res: Response) => {
         statusFinal = status === "close" ? "DISCONNECTED" : "CONNECTING";
       }
 
-      await axios
-        .patch(
-          `${process.env.MAIN_API_URL}/nightclubs/instance/status`,
-          { instanceName, status: statusFinal },
-          { headers: { "x-internal-key": process.env.MAIN_API_TOKEN } },
-        )
-        .catch((err) =>
-          console.error("❌ Erro ao avisar Main API:", err.message),
-        );
-
+      await notifyMainApiStatus(instanceName, statusFinal);
       return;
     }
 
@@ -208,13 +245,7 @@ export const handleEvolutionWebhook = async (req: Request, res: Response) => {
         where: { instanceName },
         data: { status: "CONNECTED", qrCode: null },
       });
-      await axios
-        .patch(
-          `${process.env.MAIN_API_URL}/nightclubs/instance/status`,
-          { instanceName, status: "CONNECTED" },
-          { headers: { "x-internal-key": process.env.MAIN_API_TOKEN } },
-        )
-        .catch(() => {});
+      await notifyMainApiStatus(instanceName, "CONNECTED");
     }
 
     const aiAgent = whatsappInstance.nightclub?.aiAgent;
